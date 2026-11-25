@@ -62,6 +62,7 @@ namespace softphysics::window
             }
         };
 
+        // Keep ownership local until both engine and SDL event IDs are registered.
         std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
             SDL_CreateWindow(
                 specs.title.c_str(),
@@ -160,6 +161,7 @@ namespace softphysics::window
                     break;
                 }
 
+                // Logical window coordinates can differ from drawable pixels on high-DPI displays.
                 int logicalWidth = 0;
                 int logicalHeight = 0;
                 int pixelWidth = 0;

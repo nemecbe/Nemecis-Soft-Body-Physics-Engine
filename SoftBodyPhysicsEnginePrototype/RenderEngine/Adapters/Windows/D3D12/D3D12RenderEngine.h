@@ -7,6 +7,7 @@
 
 namespace softphysics::renderengine::windows::d3d12
 {
+    // Windows-only implementation of the portable renderer contract.
     class D3D12RenderEngine final : public IRenderEngine
     {
     public:

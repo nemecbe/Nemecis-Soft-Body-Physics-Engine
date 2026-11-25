@@ -27,7 +27,7 @@ namespace softphysics::window
         std::uint64_t id = 0;
     };
 
-    // Window Event Types
+    // Events use our own handles so callers do not depend on SDL's identifiers.
     struct WindowCloseRequested
     {
         WindowHandle window{};

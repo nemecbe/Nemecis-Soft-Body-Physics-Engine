@@ -8,6 +8,7 @@
 
 namespace softphysics::renderengine
 {
+	// Rendering contract used by the application; API-specific resources stay in adapters.
 	class IRenderEngine {
 	public:
 		virtual bool initialize(
@@ -19,6 +20,7 @@ namespace softphysics::renderengine
 		virtual void clear(softphysics::renderengine::LinearColor color) = 0;
 		virtual softphysics::renderengine::MeshHandle create_mesh(
 			const softphysics::renderengine::MeshData& mesh) = 0;
+		// Replaces positions/normals without rebuilding topology (used by deformation).
 		virtual bool update_mesh_vertices(
 			softphysics::renderengine::MeshHandle mesh,
 			const std::vector<softphysics::renderengine::MeshVertex>& vertices) = 0;

@@ -1,4 +1,4 @@
-// Common types used throughout the prototype
+// Common, renderer- and window-system-independent value types.
 
 #pragma once
 

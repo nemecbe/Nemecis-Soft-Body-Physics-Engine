@@ -77,6 +77,7 @@ namespace softphysics::assets
                            std::to_string(static_cast<int>(parseResult)) + ").";
             return std::nullopt;
         }
+        // cgltf owns parsed arrays and loaded buffer data; this guard releases them on every exit.
         const std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data(parsedData, &cgltf_free);
 
         const auto bufferResult = cgltf_load_buffers(&options, parsedData, pathString.c_str());
@@ -161,6 +162,7 @@ namespace softphysics::assets
             component *= inverseRotationLength;
         }
 
+        // Flatten supported primitives into one CPU mesh and bake the root node transform.
         softphysics::renderengine::MeshData mesh;
         for (cgltf_size primitiveIndex = 0;
              primitiveIndex < meshNode->mesh->primitives_count;

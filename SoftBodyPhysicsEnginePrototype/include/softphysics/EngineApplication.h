@@ -9,6 +9,7 @@ namespace softphysics::engine
 {
     struct EngineConfig
     {
+        // Asset paths are resolved from the executable directory by the current test bed.
         const char* windowTitle = "Soft Physics Engine Test Bed";
         const char* assetDirectory = "assets";
         std::uint32_t windowWidth = 1280;
