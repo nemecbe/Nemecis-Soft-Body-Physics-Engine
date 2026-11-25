@@ -14,6 +14,7 @@ int main()
     _CrtSetDbgFlag(debugFlags | _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 
+    // Keep this executable thin: games should call the same public DLL API.
     softphysics::engine::EngineApplication application;
     if (!application.initialize())
     {

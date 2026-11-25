@@ -9,6 +9,7 @@
 
 namespace softphysics::window
 {
+	// Platform window implementations translate native events into WindowEvent values.
 	class IWindowSystem {
 	public:
 		virtual std::optional<WindowHandle> create_window(const WindowDesc& specs) = 0;

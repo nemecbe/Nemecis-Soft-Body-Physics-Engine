@@ -234,6 +234,7 @@ namespace softphysics::renderengine::windows::d3d12
             return true;
         }
 
+        // Minimal shader pair: transform geometry and apply directional diffuse lighting.
         constexpr char MeshVertexShader[] = R"(
 cbuffer DrawConstants : register(b0)
 {
@@ -297,6 +298,7 @@ float4 PSMain(
     {
         struct MeshGpuData
         {
+            // One vertex buffer per swap-chain frame avoids rewriting data still in GPU use.
             std::array<ComPtr<ID3D12Resource>, FrameCount> vertexBuffers;
             ComPtr<ID3D12Resource> indexBuffer;
             UINT vertexCount = 0;
@@ -918,6 +920,7 @@ float4 PSMain(
             return false;
         }
 
+        // Wait before reusing this swap-chain slot's allocator and dynamic mesh buffers.
         impl_->frameIndex = impl_->swapChain->GetCurrentBackBufferIndex();
         if (!impl_->wait_for_frame(impl_->frameIndex))
         {
@@ -1000,6 +1003,7 @@ float4 PSMain(
             return false;
         }
 
+        // Submit recorded work, display it, then fence this slot before it is reused.
         ID3D12CommandList* commandLists[] = {impl_->commandList.Get()};
         impl_->commandQueue->ExecuteCommandLists(1, commandLists);
         const HRESULT presentResult = impl_->swapChain->Present(1, 0);
@@ -1043,6 +1047,7 @@ float4 PSMain(
             }
         }
 
+        // These offsets must match the POSITION/NORMAL/COLOR input layout below.
         static_assert(sizeof(MeshVertex) == 40);
         static_assert(offsetof(MeshVertex, normal) == 12);
         static_assert(offsetof(MeshVertex, color) == 24);
@@ -1096,6 +1101,7 @@ float4 PSMain(
             return false;
         }
 
+        // begin_frame waits for this frame slot's fence before this upload buffer is reused.
         const UINT64 byteSize = static_cast<UINT64>(vertices.size() * sizeof(MeshVertex));
         D3D12_RANGE noReadRange{0, 0};
         void* mappedData = nullptr;

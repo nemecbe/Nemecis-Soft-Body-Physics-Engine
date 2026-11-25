@@ -30,6 +30,7 @@ namespace
 
     softphysics::renderengine::MeshData make_glove_sphere()
     {
+        // Temporary procedural stand-in so the impact experiment needs no glove asset.
         constexpr float radius = 0.075f;
         constexpr std::uint32_t ringCount = 12;
         constexpr std::uint32_t segmentCount = 20;
@@ -112,6 +113,7 @@ namespace
         float impactAmount,
         std::vector<MeshVertex>& deformedVertices)
     {
+        // Start from the undeformed mesh each frame so dents do not accumulate or drift.
         deformedVertices = baseMesh.vertices;
         if (impactAmount <= 0.001f)
         {
@@ -124,6 +126,7 @@ namespace
         constexpr float radiusSquared = radius * radius;
         constexpr float maximumDent = 0.045f;
 
+        // A Gaussian radial falloff makes the scripted indentation smooth around contact.
         for (std::size_t index = 0; index < baseMesh.vertices.size(); ++index)
         {
             const auto& base = baseMesh.vertices[index];
@@ -136,6 +139,7 @@ namespace
                 maximumDent * impactAmount * radialWeight * frontWeight;
         }
 
+        // Rebuild vertex normals from the deformed triangles for correct lighting.
         std::vector<Vector3> accumulatedNormals(deformedVertices.size());
         for (std::size_t index = 0; index + 2 < baseMesh.indices.size(); index += 3)
         {
@@ -204,6 +208,7 @@ namespace softphysics::engine
             return false;
         }
 
+        // Platform objects are owned behind interfaces; this prototype currently selects SDL + D3D12.
         impl_->windowSystem = std::make_unique<softphysics::window::SdlWindowSystem>();
 
         softphysics::window::WindowDesc windowDesc;
@@ -245,6 +250,7 @@ namespace softphysics::engine
             return false;
         }
 
+        // Resolve assets beside the built executable, where CMake stages the test mesh.
         const char* executableDirectory = SDL_GetBasePath();
         if (executableDirectory == nullptr)
         {
@@ -302,6 +308,7 @@ namespace softphysics::engine
         impl_->running = true;
         int exitCode = 0;
         const auto animationStart = std::chrono::steady_clock::now();
+        // This timed kinematic cycle is a stand-in until collision-driven motion exists.
         constexpr float cycleDuration = 2.8f;
         constexpr float approachDuration = 0.75f;
         constexpr float contactHoldDuration = 0.18f;

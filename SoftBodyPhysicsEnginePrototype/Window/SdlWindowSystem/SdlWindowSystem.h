@@ -13,6 +13,7 @@ namespace softphysics::window {
 	private:
 		std::uint64_t nextWindowId = 1;
 		bool sdlInitialized = false;
+		// Public handles are stable engine IDs; SDL IDs are only used to map incoming events.
 		std::unordered_map<std::uint64_t, SDL_Window*> windowsByHandle;
 		std::unordered_map<SDL_WindowID, WindowHandle> handlesBySdlId;
 
