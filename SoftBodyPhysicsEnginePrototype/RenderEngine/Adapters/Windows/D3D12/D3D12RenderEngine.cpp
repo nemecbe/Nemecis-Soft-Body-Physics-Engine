@@ -266,10 +266,13 @@ VertexOutput VSMain(VertexInput input)
 )";
 
         constexpr char MeshPixelShader[] = R"(
-float4 PSMain(float4 position : SV_POSITION, float3 normal : NORMAL, float4 color : COLOR) : SV_TARGET
+float4 PSMain(
+    float4 position : SV_POSITION,
+    float3 interpolatedNormal : NORMAL,
+    float4 color : COLOR) : SV_TARGET
 {
-    normal = normalize(normal);
-    float3 lightDirection = normalize(float3(-0.4, 0.8, -0.6));
+    float3 normal = normalize(interpolatedNormal);
+    float3 lightDirection = normalize(float3(-0.4, 0.8, 0.6));
     float diffuse = saturate(dot(normal, lightDirection));
     float lighting = 0.25 + 0.75 * diffuse;
     return float4(color.rgb * lighting, color.a);
@@ -294,7 +297,7 @@ float4 PSMain(float4 position : SV_POSITION, float3 normal : NORMAL, float4 colo
     {
         struct MeshGpuData
         {
-            ComPtr<ID3D12Resource> vertexBuffer;
+            std::array<ComPtr<ID3D12Resource>, FrameCount> vertexBuffers;
             ComPtr<ID3D12Resource> indexBuffer;
             UINT vertexCount = 0;
             UINT indexCount = 0;
@@ -1048,9 +1051,12 @@ float4 PSMain(float4 position : SV_POSITION, float3 normal : NORMAL, float4 colo
         gpuMesh.vertexCount = static_cast<UINT>(mesh.vertices.size());
         gpuMesh.indexCount = static_cast<UINT>(mesh.indices.size());
         const UINT64 vertexBytes = static_cast<UINT64>(mesh.vertices.size() * sizeof(MeshVertex));
-        if (!impl_->create_upload_buffer(mesh.vertices.data(), vertexBytes, gpuMesh.vertexBuffer))
+        for (auto& vertexBuffer : gpuMesh.vertexBuffers)
         {
-            return {};
+            if (!impl_->create_upload_buffer(mesh.vertices.data(), vertexBytes, vertexBuffer))
+            {
+                return {};
+            }
         }
         if (!mesh.indices.empty())
         {
@@ -1074,6 +1080,33 @@ float4 PSMain(float4 position : SV_POSITION, float3 normal : NORMAL, float4 colo
         impl_->nextMeshId = id + 1;
         impl_->meshes.emplace(id, std::move(gpuMesh));
         return {id};
+    }
+
+    bool D3D12RenderEngine::update_mesh_vertices(
+        MeshHandle mesh,
+        const std::vector<MeshVertex>& vertices)
+    {
+        if (!impl_->initialized || !impl_->frameOpen || !mesh)
+        {
+            return false;
+        }
+        const auto found = impl_->meshes.find(mesh.id);
+        if (found == impl_->meshes.end() || vertices.size() != found->second.vertexCount)
+        {
+            return false;
+        }
+
+        const UINT64 byteSize = static_cast<UINT64>(vertices.size() * sizeof(MeshVertex));
+        D3D12_RANGE noReadRange{0, 0};
+        void* mappedData = nullptr;
+        auto& vertexBuffer = found->second.vertexBuffers[impl_->frameIndex];
+        if (report_failure(vertexBuffer->Map(0, &noReadRange, &mappedData), "Map dynamic mesh vertex buffer"))
+        {
+            return false;
+        }
+        std::memcpy(mappedData, vertices.data(), static_cast<std::size_t>(byteSize));
+        vertexBuffer->Unmap(0, nullptr);
+        return true;
     }
 
     void D3D12RenderEngine::destroy_mesh(MeshHandle mesh)
@@ -1139,7 +1172,7 @@ float4 PSMain(float4 position : SV_POSITION, float3 normal : NORMAL, float4 colo
         impl_->commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         const D3D12_VERTEX_BUFFER_VIEW vertexBufferView{
-            gpuMesh.vertexBuffer->GetGPUVirtualAddress(),
+            gpuMesh.vertexBuffers[impl_->frameIndex]->GetGPUVirtualAddress(),
             gpuMesh.vertexCount * static_cast<UINT>(sizeof(MeshVertex)),
             static_cast<UINT>(sizeof(MeshVertex))};
         impl_->commandList->IASetVertexBuffers(0, 1, &vertexBufferView);

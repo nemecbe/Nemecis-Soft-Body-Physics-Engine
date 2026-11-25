@@ -25,5 +25,14 @@ FetchContent_Declare (
 
 FetchContent_MakeAvailable (SDL3)
 
+# cgltf is a small single-header glTF 2.0 parser used by the engine's asset loader.
+FetchContent_Declare (
+  cgltf
+  GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+  GIT_TAG v1.15
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable (cgltf)
+
 # Include sub-projects.
 add_subdirectory ("SoftBodyPhysicsEnginePrototype" "engine")

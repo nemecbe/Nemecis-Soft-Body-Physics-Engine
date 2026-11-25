@@ -1,5 +1,6 @@
 #include <softphysics/EngineApplication.h>
 
+#include "../Assets/Gltf/GlbMeshLoader.h"
 #include "../RenderEngine/IRenderEngine.h"
 #include "../Window/SdlWindowSystem/SdlWindowSystem.h"
 
@@ -8,81 +9,166 @@
 #endif
 
 #include <chrono>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
+#include <utility>
 #include <variant>
 
 namespace
 {
-    softphysics::renderengine::MeshData make_colored_cube()
+    using softphysics::renderengine::LinearColor;
+    using softphysics::renderengine::MeshData;
+    using softphysics::renderengine::MeshVertex;
+    using softphysics::renderengine::Vector3;
+
+    softphysics::renderengine::MeshData make_glove_sphere()
     {
-        using softphysics::renderengine::LinearColor;
-        using softphysics::renderengine::MeshData;
-        using softphysics::renderengine::Vector3;
-
-        constexpr float halfExtent = 0.5f;
+        constexpr float radius = 0.075f;
+        constexpr std::uint32_t ringCount = 12;
+        constexpr std::uint32_t segmentCount = 20;
         MeshData mesh;
-        mesh.vertices.reserve(24);
-        mesh.indices.reserve(36);
+        mesh.vertices.reserve((ringCount + 1) * (segmentCount + 1));
+        mesh.indices.reserve(ringCount * segmentCount * 6);
+        const LinearColor gloveColor{0.9f, 0.035f, 0.06f, 1.0f};
 
-        const auto addFace = [&mesh](
-                                 const std::array<Vector3, 4>& corners,
-                                 Vector3 faceNormal,
-                                 LinearColor faceColor)
+        for (std::uint32_t ring = 0; ring <= ringCount; ++ring)
         {
-            const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
-            for (const auto& corner : corners)
+            const float latitude = 3.14159265f * static_cast<float>(ring) /
+                                   static_cast<float>(ringCount);
+            const float y = std::cos(latitude);
+            const float radial = std::sin(latitude);
+            for (std::uint32_t segment = 0; segment <= segmentCount; ++segment)
             {
-                mesh.vertices.push_back(
-                    {{corner.x, corner.y, corner.z},
-                     {faceNormal.x, faceNormal.y, faceNormal.z},
-                     faceColor});
+                const float longitude = 6.28318531f * static_cast<float>(segment) /
+                                        static_cast<float>(segmentCount);
+                const Vector3 normal{
+                    radial * std::cos(longitude),
+                    y,
+                    radial * std::sin(longitude)};
+                mesh.vertices.push_back({
+                    {normal.x * radius, normal.y * radius, normal.z * radius},
+                    {normal.x, normal.y, normal.z},
+                    gloveColor});
             }
-            mesh.indices.insert(
-                mesh.indices.end(),
-                {first, first + 1, first + 2, first, first + 2, first + 3});
-        };
+        }
 
-        addFace({{{-halfExtent, -halfExtent, -halfExtent},
-                  {-halfExtent, halfExtent, -halfExtent},
-                  {halfExtent, halfExtent, -halfExtent},
-                  {halfExtent, -halfExtent, -halfExtent}}},
-                {0.0f, 0.0f, -1.0f},
-                {0.95f, 0.25f, 0.2f, 1.0f});
-        addFace({{{halfExtent, -halfExtent, -halfExtent},
-                  {halfExtent, -halfExtent, halfExtent},
-                  {halfExtent, halfExtent, halfExtent},
-                  {halfExtent, halfExtent, -halfExtent}}},
-                {1.0f, 0.0f, 0.0f},
-                {0.2f, 0.8f, 0.35f, 1.0f});
-        addFace({{{halfExtent, -halfExtent, halfExtent},
-                  {-halfExtent, -halfExtent, halfExtent},
-                  {-halfExtent, halfExtent, halfExtent},
-                  {halfExtent, halfExtent, halfExtent}}},
-                {0.0f, 0.0f, 1.0f},
-                {0.2f, 0.4f, 0.95f, 1.0f});
-        addFace({{{-halfExtent, -halfExtent, halfExtent},
-                  {-halfExtent, -halfExtent, -halfExtent},
-                  {-halfExtent, halfExtent, -halfExtent},
-                  {-halfExtent, halfExtent, halfExtent}}},
-                {-1.0f, 0.0f, 0.0f},
-                {0.95f, 0.75f, 0.2f, 1.0f});
-        addFace({{{-halfExtent, halfExtent, -halfExtent},
-                  {-halfExtent, halfExtent, halfExtent},
-                  {halfExtent, halfExtent, halfExtent},
-                  {halfExtent, halfExtent, -halfExtent}}},
-                {0.0f, 1.0f, 0.0f},
-                {0.75f, 0.3f, 0.9f, 1.0f});
-        addFace({{{-halfExtent, -halfExtent, halfExtent},
-                  {-halfExtent, -halfExtent, -halfExtent},
-                  {halfExtent, -halfExtent, -halfExtent},
-                  {halfExtent, -halfExtent, halfExtent}}},
-                {0.0f, -1.0f, 0.0f},
-                {0.2f, 0.8f, 0.9f, 1.0f});
+        for (std::uint32_t ring = 0; ring < ringCount; ++ring)
+        {
+            for (std::uint32_t segment = 0; segment < segmentCount; ++segment)
+            {
+                const std::uint32_t first = ring * (segmentCount + 1) + segment;
+                const std::uint32_t nextRing = first + segmentCount + 1;
+                mesh.indices.insert(
+                    mesh.indices.end(),
+                    {first, nextRing, first + 1,
+                     first + 1, nextRing, nextRing + 1});
+            }
+        }
         return mesh;
+    }
+
+    float smooth_step(float edge0, float edge1, float value)
+    {
+        const float t = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    Vector3 subtract(Vector3 a, Vector3 b)
+    {
+        return {a.x - b.x, a.y - b.y, a.z - b.z};
+    }
+
+    Vector3 cross(Vector3 a, Vector3 b)
+    {
+        return {
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+    }
+
+    bool normalize(Vector3& value)
+    {
+        const float lengthSquared = value.x * value.x + value.y * value.y + value.z * value.z;
+        if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-12f)
+        {
+            return false;
+        }
+        const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+        value.x *= inverseLength;
+        value.y *= inverseLength;
+        value.z *= inverseLength;
+        return true;
+    }
+
+    void deform_torso_for_impact(
+        const MeshData& baseMesh,
+        float impactAmount,
+        std::vector<MeshVertex>& deformedVertices)
+    {
+        deformedVertices = baseMesh.vertices;
+        if (impactAmount <= 0.001f)
+        {
+            return;
+        }
+
+        constexpr float contactX = 0.0f;
+        constexpr float contactY = 0.025f;
+        constexpr float radius = 0.075f;
+        constexpr float radiusSquared = radius * radius;
+        constexpr float maximumDent = 0.045f;
+
+        for (std::size_t index = 0; index < baseMesh.vertices.size(); ++index)
+        {
+            const auto& base = baseMesh.vertices[index];
+            const float dx = base.position[0] - contactX;
+            const float dy = base.position[1] - contactY;
+            const float distanceSquared = dx * dx + dy * dy;
+            const float radialWeight = std::exp(-distanceSquared / (2.0f * radiusSquared));
+            const float frontWeight = std::clamp(base.normal[2], 0.0f, 1.0f);
+            deformedVertices[index].position[2] -=
+                maximumDent * impactAmount * radialWeight * frontWeight;
+        }
+
+        std::vector<Vector3> accumulatedNormals(deformedVertices.size());
+        for (std::size_t index = 0; index + 2 < baseMesh.indices.size(); index += 3)
+        {
+            const auto i0 = baseMesh.indices[index];
+            const auto i1 = baseMesh.indices[index + 1];
+            const auto i2 = baseMesh.indices[index + 2];
+            const auto point = [&deformedVertices](std::uint32_t vertex)
+            {
+                const auto& position = deformedVertices[vertex].position;
+                return Vector3{position[0], position[1], position[2]};
+            };
+            const Vector3 edgeA = subtract(point(i1), point(i0));
+            const Vector3 edgeB = subtract(point(i2), point(i0));
+            const Vector3 faceNormal = cross(edgeA, edgeB);
+            for (const auto vertex : {i0, i1, i2})
+            {
+                auto& normal = accumulatedNormals[vertex];
+                normal.x += faceNormal.x;
+                normal.y += faceNormal.y;
+                normal.z += faceNormal.z;
+            }
+        }
+
+        for (std::size_t index = 0; index < deformedVertices.size(); ++index)
+        {
+            if (normalize(accumulatedNormals[index]))
+            {
+                deformedVertices[index].normal = {
+                    accumulatedNormals[index].x,
+                    accumulatedNormals[index].y,
+                    accumulatedNormals[index].z};
+            }
+        }
     }
 }
 
@@ -93,7 +179,10 @@ namespace softphysics::engine
         std::unique_ptr<softphysics::window::SdlWindowSystem> windowSystem;
         std::unique_ptr<softphysics::renderengine::IRenderEngine> renderer;
         std::optional<softphysics::window::WindowHandle> window;
-        softphysics::renderengine::MeshHandle cubeMesh;
+        softphysics::renderengine::MeshHandle torsoMesh;
+        softphysics::renderengine::MeshHandle gloveMesh;
+        softphysics::renderengine::MeshData torsoBaseMesh;
+        std::vector<softphysics::renderengine::MeshVertex> torsoDeformedVertices;
         bool initialized = false;
         bool running = false;
     };
@@ -147,7 +236,7 @@ namespace softphysics::engine
         }
 
         softphysics::renderengine::Camera3D camera;
-        camera.position = {2.2f, 1.7f, -4.5f};
+        camera.position = {0.65f, 0.28f, 1.25f};
         camera.target = {0.0f, 0.0f, 0.0f};
         if (!impl_->renderer->set_camera(camera))
         {
@@ -156,13 +245,46 @@ namespace softphysics::engine
             return false;
         }
 
-        impl_->cubeMesh = impl_->renderer->create_mesh(make_colored_cube());
-        if (!impl_->cubeMesh)
+        const char* executableDirectory = SDL_GetBasePath();
+        if (executableDirectory == nullptr)
         {
-            std::cerr << "Could not create the test cube mesh.\n";
+            std::cerr << "Could not locate the testbed executable directory: "
+                      << SDL_GetError() << "\n";
             shutdown();
             return false;
         }
+        const std::filesystem::path assetDirectory =
+            std::filesystem::u8path(executableDirectory) /
+            std::filesystem::u8path(config.assetDirectory != nullptr ? config.assetDirectory : "assets");
+        const auto torsoPath = assetDirectory / "meshes" / "Torso_Test_Verticies.glb";
+        std::string assetError;
+        auto torsoData = softphysics::assets::load_glb_mesh(torsoPath, assetError);
+        if (!torsoData)
+        {
+            std::cerr << "Could not load torso mesh at " << torsoPath.string()
+                      << ": " << assetError << "\n";
+            shutdown();
+            return false;
+        }
+        impl_->torsoBaseMesh = std::move(*torsoData);
+        impl_->torsoDeformedVertices = impl_->torsoBaseMesh.vertices;
+        impl_->torsoMesh = impl_->renderer->create_mesh(impl_->torsoBaseMesh);
+        if (!impl_->torsoMesh)
+        {
+            std::cerr << "Could not upload the imported torso mesh.\n";
+            shutdown();
+            return false;
+        }
+
+        impl_->gloveMesh = impl_->renderer->create_mesh(make_glove_sphere());
+        if (!impl_->gloveMesh)
+        {
+            std::cerr << "Could not create the procedural glove sphere.\n";
+            shutdown();
+            return false;
+        }
+        std::cout << "Loaded torso mesh with " << impl_->torsoBaseMesh.vertices.size()
+                  << " vertices and " << impl_->torsoBaseMesh.indices.size() << " indices.\n";
 #endif
 
         impl_->initialized = true;
@@ -180,6 +302,12 @@ namespace softphysics::engine
         impl_->running = true;
         int exitCode = 0;
         const auto animationStart = std::chrono::steady_clock::now();
+        constexpr float cycleDuration = 2.8f;
+        constexpr float approachDuration = 0.75f;
+        constexpr float contactHoldDuration = 0.18f;
+        constexpr float releaseDuration = 0.42f;
+        constexpr float gloveStartZ = 0.72f;
+        constexpr float gloveContactZ = 0.12f;
         while (impl_->running)
         {
             softphysics::window::WindowEvent event;
@@ -230,12 +358,54 @@ namespace softphysics::engine
                     continue;
                 }
 
-                impl_->renderer->clear({0.25f, 0.65f, 0.95f, 1.0f});
                 const float elapsedSeconds = std::chrono::duration<float>(
                     std::chrono::steady_clock::now() - animationStart).count();
-                softphysics::renderengine::Transform3D cubeTransform;
-                cubeTransform.rotationRadians = {0.35f, elapsedSeconds * 0.65f, 0.1f};
-                impl_->renderer->draw_mesh(impl_->cubeMesh, cubeTransform);
+                // A deterministic kinematic punch drives the first deformation pass;
+                // collision detection and force-based response will replace this later.
+                const float phase = std::fmod(elapsedSeconds, cycleDuration);
+                float gloveProgress = 0.0f;
+                float impactAmount = 0.0f;
+                if (phase < approachDuration)
+                {
+                    const float approach = phase / approachDuration;
+                    gloveProgress = smooth_step(0.0f, 1.0f, approach);
+                    impactAmount = smooth_step(0.68f, 1.0f, approach);
+                }
+                else if (phase < approachDuration + contactHoldDuration)
+                {
+                    gloveProgress = 1.0f;
+                    impactAmount = 1.0f;
+                }
+                else if (phase < approachDuration + contactHoldDuration + releaseDuration)
+                {
+                    const float release =
+                        (phase - approachDuration - contactHoldDuration) / releaseDuration;
+                    gloveProgress = 1.0f - smooth_step(0.0f, 1.0f, release);
+                    impactAmount = 1.0f - smooth_step(0.0f, 0.55f, release);
+                }
+
+                deform_torso_for_impact(
+                    impl_->torsoBaseMesh,
+                    impactAmount,
+                    impl_->torsoDeformedVertices);
+                if (!impl_->renderer->update_mesh_vertices(
+                        impl_->torsoMesh,
+                        impl_->torsoDeformedVertices))
+                {
+                    std::cerr << "Could not update the deformed torso vertices.\n";
+                    impl_->running = false;
+                    exitCode = 1;
+                    continue;
+                }
+
+                impl_->renderer->clear({0.25f, 0.65f, 0.95f, 1.0f});
+                impl_->renderer->draw_mesh(impl_->torsoMesh, {});
+                softphysics::renderengine::Transform3D gloveTransform;
+                gloveTransform.position = {
+                    0.0f,
+                    0.025f,
+                    gloveStartZ + (gloveContactZ - gloveStartZ) * gloveProgress};
+                impl_->renderer->draw_mesh(impl_->gloveMesh, gloveTransform);
                 if (!impl_->renderer->present())
                 {
                     std::cerr << "Could not present a renderer frame.\n";
@@ -263,10 +433,15 @@ namespace softphysics::engine
         impl_->running = false;
         if (impl_->renderer)
         {
-            if (impl_->cubeMesh)
+            if (impl_->torsoMesh)
             {
-                impl_->renderer->destroy_mesh(impl_->cubeMesh);
-                impl_->cubeMesh = {};
+                impl_->renderer->destroy_mesh(impl_->torsoMesh);
+                impl_->torsoMesh = {};
+            }
+            if (impl_->gloveMesh)
+            {
+                impl_->renderer->destroy_mesh(impl_->gloveMesh);
+                impl_->gloveMesh = {};
             }
             impl_->renderer->shutdown();
             impl_->renderer.reset();
@@ -278,6 +453,8 @@ namespace softphysics::engine
         }
         impl_->window.reset();
         impl_->windowSystem.reset();
+        impl_->torsoBaseMesh = {};
+        impl_->torsoDeformedVertices.clear();
         impl_->initialized = false;
     }
 }
