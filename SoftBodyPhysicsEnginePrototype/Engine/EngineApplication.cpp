@@ -8,11 +8,83 @@
 #endif
 
 #include <chrono>
+#include <array>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <thread>
 #include <variant>
+
+namespace
+{
+    softphysics::renderengine::MeshData make_colored_cube()
+    {
+        using softphysics::renderengine::LinearColor;
+        using softphysics::renderengine::MeshData;
+        using softphysics::renderengine::Vector3;
+
+        constexpr float halfExtent = 0.5f;
+        MeshData mesh;
+        mesh.vertices.reserve(24);
+        mesh.indices.reserve(36);
+
+        const auto addFace = [&mesh](
+                                 const std::array<Vector3, 4>& corners,
+                                 Vector3 faceNormal,
+                                 LinearColor faceColor)
+        {
+            const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
+            for (const auto& corner : corners)
+            {
+                mesh.vertices.push_back(
+                    {{corner.x, corner.y, corner.z},
+                     {faceNormal.x, faceNormal.y, faceNormal.z},
+                     faceColor});
+            }
+            mesh.indices.insert(
+                mesh.indices.end(),
+                {first, first + 1, first + 2, first, first + 2, first + 3});
+        };
+
+        addFace({{{-halfExtent, -halfExtent, -halfExtent},
+                  {-halfExtent, halfExtent, -halfExtent},
+                  {halfExtent, halfExtent, -halfExtent},
+                  {halfExtent, -halfExtent, -halfExtent}}},
+                {0.0f, 0.0f, -1.0f},
+                {0.95f, 0.25f, 0.2f, 1.0f});
+        addFace({{{halfExtent, -halfExtent, -halfExtent},
+                  {halfExtent, -halfExtent, halfExtent},
+                  {halfExtent, halfExtent, halfExtent},
+                  {halfExtent, halfExtent, -halfExtent}}},
+                {1.0f, 0.0f, 0.0f},
+                {0.2f, 0.8f, 0.35f, 1.0f});
+        addFace({{{halfExtent, -halfExtent, halfExtent},
+                  {-halfExtent, -halfExtent, halfExtent},
+                  {-halfExtent, halfExtent, halfExtent},
+                  {halfExtent, halfExtent, halfExtent}}},
+                {0.0f, 0.0f, 1.0f},
+                {0.2f, 0.4f, 0.95f, 1.0f});
+        addFace({{{-halfExtent, -halfExtent, halfExtent},
+                  {-halfExtent, -halfExtent, -halfExtent},
+                  {-halfExtent, halfExtent, -halfExtent},
+                  {-halfExtent, halfExtent, halfExtent}}},
+                {-1.0f, 0.0f, 0.0f},
+                {0.95f, 0.75f, 0.2f, 1.0f});
+        addFace({{{-halfExtent, halfExtent, -halfExtent},
+                  {-halfExtent, halfExtent, halfExtent},
+                  {halfExtent, halfExtent, halfExtent},
+                  {halfExtent, halfExtent, -halfExtent}}},
+                {0.0f, 1.0f, 0.0f},
+                {0.75f, 0.3f, 0.9f, 1.0f});
+        addFace({{{-halfExtent, -halfExtent, halfExtent},
+                  {-halfExtent, -halfExtent, -halfExtent},
+                  {halfExtent, -halfExtent, -halfExtent},
+                  {halfExtent, -halfExtent, halfExtent}}},
+                {0.0f, -1.0f, 0.0f},
+                {0.2f, 0.8f, 0.9f, 1.0f});
+        return mesh;
+    }
+}
 
 namespace softphysics::engine
 {
@@ -21,6 +93,7 @@ namespace softphysics::engine
         std::unique_ptr<softphysics::window::SdlWindowSystem> windowSystem;
         std::unique_ptr<softphysics::renderengine::IRenderEngine> renderer;
         std::optional<softphysics::window::WindowHandle> window;
+        softphysics::renderengine::MeshHandle cubeMesh;
         bool initialized = false;
         bool running = false;
     };
@@ -72,6 +145,24 @@ namespace softphysics::engine
             shutdown();
             return false;
         }
+
+        softphysics::renderengine::Camera3D camera;
+        camera.position = {2.2f, 1.7f, -4.5f};
+        camera.target = {0.0f, 0.0f, 0.0f};
+        if (!impl_->renderer->set_camera(camera))
+        {
+            std::cerr << "Could not set up the test camera.\n";
+            shutdown();
+            return false;
+        }
+
+        impl_->cubeMesh = impl_->renderer->create_mesh(make_colored_cube());
+        if (!impl_->cubeMesh)
+        {
+            std::cerr << "Could not create the test cube mesh.\n";
+            shutdown();
+            return false;
+        }
 #endif
 
         impl_->initialized = true;
@@ -88,6 +179,7 @@ namespace softphysics::engine
 
         impl_->running = true;
         int exitCode = 0;
+        const auto animationStart = std::chrono::steady_clock::now();
         while (impl_->running)
         {
             softphysics::window::WindowEvent event;
@@ -139,6 +231,11 @@ namespace softphysics::engine
                 }
 
                 impl_->renderer->clear({0.25f, 0.65f, 0.95f, 1.0f});
+                const float elapsedSeconds = std::chrono::duration<float>(
+                    std::chrono::steady_clock::now() - animationStart).count();
+                softphysics::renderengine::Transform3D cubeTransform;
+                cubeTransform.rotationRadians = {0.35f, elapsedSeconds * 0.65f, 0.1f};
+                impl_->renderer->draw_mesh(impl_->cubeMesh, cubeTransform);
                 if (!impl_->renderer->present())
                 {
                     std::cerr << "Could not present a renderer frame.\n";
@@ -166,6 +263,11 @@ namespace softphysics::engine
         impl_->running = false;
         if (impl_->renderer)
         {
+            if (impl_->cubeMesh)
+            {
+                impl_->renderer->destroy_mesh(impl_->cubeMesh);
+                impl_->cubeMesh = {};
+            }
             impl_->renderer->shutdown();
             impl_->renderer.reset();
         }
