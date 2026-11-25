@@ -11,6 +11,10 @@ endif()
 
 project ("SoftBodyPhysicsEnginePrototype")
 
+# Enable standard C++ exception unwinding for every C++ target in this build,
+# including the test-bed host and any dependencies that compile C++ sources.
+add_compile_options ("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/EHsc>")
+
 include (FetchContent)
 
 set (SDL_TESTS OFF CACHE BOOL "" FORCE)
