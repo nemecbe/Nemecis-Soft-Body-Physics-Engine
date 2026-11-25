@@ -74,7 +74,7 @@ target_compile_features (SoftPhysicsTestBed PRIVATE cxx_std_20)
 target_link_libraries (SoftPhysicsTestBed PRIVATE SoftPhysicsEngine)
 
 set (SOFTPHYSICS_TEST_TORSO_ASSET
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/meshes/Torso_Test_Verticies.glb")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/meshes/Torso_Test_Verticies.glb")
 add_custom_command (
   TARGET SoftPhysicsTestBed POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
