@@ -24,6 +24,9 @@ namespace softphysics::renderengine::windows::d3d12
         bool begin_frame() override;
         void clear(LinearColor color) override;
         MeshHandle create_mesh(const MeshData& mesh) override;
+        bool update_mesh_vertices(
+            MeshHandle mesh,
+            const std::vector<MeshVertex>& vertices) override;
         void destroy_mesh(MeshHandle mesh) override;
         void draw_mesh(MeshHandle mesh, const Transform3D& transform) override;
         bool present() override;

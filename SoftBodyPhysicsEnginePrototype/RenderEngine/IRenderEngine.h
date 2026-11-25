@@ -19,6 +19,9 @@ namespace softphysics::renderengine
 		virtual void clear(softphysics::renderengine::LinearColor color) = 0;
 		virtual softphysics::renderengine::MeshHandle create_mesh(
 			const softphysics::renderengine::MeshData& mesh) = 0;
+		virtual bool update_mesh_vertices(
+			softphysics::renderengine::MeshHandle mesh,
+			const std::vector<softphysics::renderengine::MeshVertex>& vertices) = 0;
 		virtual void destroy_mesh(softphysics::renderengine::MeshHandle mesh) = 0;
 		virtual void draw_mesh(
 			softphysics::renderengine::MeshHandle mesh,

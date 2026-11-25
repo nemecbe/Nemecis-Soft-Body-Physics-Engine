@@ -3,6 +3,8 @@
 add_library (
   SoftPhysicsEngine SHARED
     "Engine/EngineApplication.cpp"
+    "Assets/Gltf/GlbMeshLoader.h"
+    "Assets/Gltf/GlbMeshLoader.cpp"
     "include/softphysics/EngineApplication.h"
     "include/softphysics/EngineExport.h"
     "RenderEngine/IRenderEngine.h"
@@ -25,6 +27,7 @@ target_include_directories (
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+target_include_directories (SoftPhysicsEngine PRIVATE "${cgltf_SOURCE_DIR}")
 target_link_libraries (SoftPhysicsEngine PRIVATE SDL3::SDL3)
 
 # Keep graphics dependencies limited to the platform being built.
@@ -69,6 +72,18 @@ message (STATUS "Soft Physics graphics backend dependencies: ${SOFTPHYSICS_GRAPH
 add_executable (SoftPhysicsTestBed "SoftBodyPhysicsEnginePrototype.cpp")
 target_compile_features (SoftPhysicsTestBed PRIVATE cxx_std_20)
 target_link_libraries (SoftPhysicsTestBed PRIVATE SoftPhysicsEngine)
+
+set (SOFTPHYSICS_TEST_TORSO_ASSET
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/meshes/Torso_Test_Verticies.glb")
+add_custom_command (
+  TARGET SoftPhysicsTestBed POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    "$<TARGET_FILE_DIR:SoftPhysicsTestBed>/assets/meshes"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SOFTPHYSICS_TEST_TORSO_ASSET}"
+    "$<TARGET_FILE_DIR:SoftPhysicsTestBed>/assets/meshes/Torso_Test_Verticies.glb"
+  VERBATIM
+)
 
 if (WIN32)
   add_custom_command (

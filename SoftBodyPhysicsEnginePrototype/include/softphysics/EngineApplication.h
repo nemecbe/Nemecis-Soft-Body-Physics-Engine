@@ -10,6 +10,7 @@ namespace softphysics::engine
     struct EngineConfig
     {
         const char* windowTitle = "Soft Physics Engine Test Bed";
+        const char* assetDirectory = "assets";
         std::uint32_t windowWidth = 1280;
         std::uint32_t windowHeight = 720;
         bool resizable = true;
