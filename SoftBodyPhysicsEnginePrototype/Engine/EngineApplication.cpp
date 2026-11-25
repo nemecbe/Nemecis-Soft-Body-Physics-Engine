@@ -1,6 +1,8 @@
 #include <softphysics/EngineApplication.h>
 
 #include "../Assets/Gltf/GlbMeshLoader.h"
+#include "../Physics/Collision.h"
+#include "../Physics/XpbdSoftBody.h"
 #include "../RenderEngine/IRenderEngine.h"
 #include "../Window/SdlWindowSystem/SdlWindowSystem.h"
 
@@ -17,6 +19,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -24,10 +27,19 @@
 
 namespace
 {
+    constexpr float GloveRadiusMeters = 0.075f;
+    constexpr float GloveStartZ = 0.72f;
+    constexpr float GloveContactZ = 0.12f;
+    constexpr float PunchCycleSeconds = 2.8f;
+    constexpr float PunchApproachSeconds = 0.75f;
+    constexpr float PunchHoldSeconds = 0.18f;
+    constexpr float PunchReleaseSeconds = 0.42f;
+
     using softphysics::renderengine::LinearColor;
     using softphysics::renderengine::MeshData;
     using softphysics::renderengine::MeshVertex;
     using softphysics::renderengine::Vector3;
+    using PhysicsVector3 = softphysics::physics::Vector3;
     using softphysics::window::KeyCode;
 
     struct CameraNavigation
@@ -142,7 +154,6 @@ namespace
     softphysics::renderengine::MeshData make_glove_sphere()
     {
         // Temporary procedural stand-in so the impact experiment needs no glove asset.
-        constexpr float radius = 0.075f;
         constexpr std::uint32_t ringCount = 12;
         constexpr std::uint32_t segmentCount = 20;
         MeshData mesh;
@@ -165,7 +176,8 @@ namespace
                     y,
                     radial * std::sin(longitude)};
                 mesh.vertices.push_back({
-                    {normal.x * radius, normal.y * radius, normal.z * radius},
+                    {normal.x * GloveRadiusMeters, normal.y * GloveRadiusMeters,
+                     normal.z * GloveRadiusMeters},
                     {normal.x, normal.y, normal.z},
                     gloveColor});
             }
@@ -190,6 +202,31 @@ namespace
     {
         const float t = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
         return t * t * (3.0f - 2.0f * t);
+    }
+
+    float glove_progress_at(float simulationTime)
+    {
+        const float phase = std::fmod(simulationTime, PunchCycleSeconds);
+        if (phase < PunchApproachSeconds)
+        {
+            return smooth_step(0.0f, 1.0f, phase / PunchApproachSeconds);
+        }
+        if (phase < PunchApproachSeconds + PunchHoldSeconds)
+        {
+            return 1.0f;
+        }
+        if (phase < PunchApproachSeconds + PunchHoldSeconds + PunchReleaseSeconds)
+        {
+            const float release = (phase - PunchApproachSeconds - PunchHoldSeconds) /
+                                  PunchReleaseSeconds;
+            return 1.0f - smooth_step(0.0f, 1.0f, release);
+        }
+        return 0.0f;
+    }
+
+    float glove_z_at(float simulationTime)
+    {
+        return GloveStartZ + (GloveContactZ - GloveStartZ) * glove_progress_at(simulationTime);
     }
 
     Vector3 subtract(Vector3 a, Vector3 b)
@@ -219,47 +256,97 @@ namespace
         return true;
     }
 
-    void deform_torso_for_impact(
-        const MeshData& baseMesh,
-        float impactAmount,
-        std::vector<MeshVertex>& deformedVertices)
+    softphysics::physics::Aabb calculate_mesh_bounds(const MeshData& mesh)
     {
-        // Start from the undeformed mesh each frame so dents do not accumulate or drift.
-        deformedVertices = baseMesh.vertices;
-        if (impactAmount <= 0.001f)
+        const auto& first = mesh.vertices.front().position;
+        softphysics::physics::Aabb bounds{
+            {first[0], first[1], first[2]},
+            {first[0], first[1], first[2]}};
+        for (const auto& vertex : mesh.vertices)
+        {
+            bounds.minimum.x = std::min(bounds.minimum.x, vertex.position[0]);
+            bounds.minimum.y = std::min(bounds.minimum.y, vertex.position[1]);
+            bounds.minimum.z = std::min(bounds.minimum.z, vertex.position[2]);
+            bounds.maximum.x = std::max(bounds.maximum.x, vertex.position[0]);
+            bounds.maximum.y = std::max(bounds.maximum.y, vertex.position[1]);
+            bounds.maximum.z = std::max(bounds.maximum.z, vertex.position[2]);
+        }
+        return bounds;
+    }
+
+    void make_welded_physics_surface(
+        const MeshData& mesh,
+        std::vector<PhysicsVector3>& physicsVertices,
+        std::vector<std::uint32_t>& physicsIndices,
+        std::vector<std::uint32_t>& renderToPhysics)
+    {
+        constexpr float weldDistanceSquared = 1.0e-10f;
+        renderToPhysics.resize(mesh.vertices.size());
+        for (std::size_t renderIndex = 0; renderIndex < mesh.vertices.size(); ++renderIndex)
+        {
+            const auto& source = mesh.vertices[renderIndex].position;
+            const PhysicsVector3 position{source[0], source[1], source[2]};
+            std::size_t physicsIndex = 0;
+            for (; physicsIndex < physicsVertices.size(); ++physicsIndex)
+            {
+                const auto& existing = physicsVertices[physicsIndex];
+                const float dx = position.x - existing.x;
+                const float dy = position.y - existing.y;
+                const float dz = position.z - existing.z;
+                if (dx * dx + dy * dy + dz * dz <= weldDistanceSquared)
+                {
+                    break;
+                }
+            }
+            if (physicsIndex == physicsVertices.size())
+            {
+                physicsVertices.push_back(position);
+            }
+            renderToPhysics[renderIndex] = static_cast<std::uint32_t>(physicsIndex);
+        }
+
+        physicsIndices.reserve(mesh.indices.size());
+        for (const std::uint32_t renderIndex : mesh.indices)
+        {
+            physicsIndices.push_back(renderToPhysics[renderIndex]);
+        }
+    }
+
+    void update_render_vertices(
+        const MeshData& baseMesh,
+        std::span<const PhysicsVector3> simulatedPositions,
+        std::span<const std::uint32_t> renderToPhysics,
+        std::vector<MeshVertex>& renderVertices)
+    {
+        renderVertices = baseMesh.vertices;
+        if (renderToPhysics.size() != renderVertices.size() ||
+            std::any_of(renderToPhysics.begin(), renderToPhysics.end(), [&](std::uint32_t index)
+            {
+                return index >= simulatedPositions.size();
+            }))
         {
             return;
         }
 
-        constexpr float contactX = 0.0f;
-        constexpr float contactY = 0.025f;
-        constexpr float radius = 0.075f;
-        constexpr float radiusSquared = radius * radius;
-        constexpr float maximumDent = 0.045f;
-
-        // A Gaussian radial falloff makes the scripted indentation smooth around contact.
-        for (std::size_t index = 0; index < baseMesh.vertices.size(); ++index)
+        for (std::size_t index = 0; index < renderVertices.size(); ++index)
         {
-            const auto& base = baseMesh.vertices[index];
-            const float dx = base.position[0] - contactX;
-            const float dy = base.position[1] - contactY;
-            const float distanceSquared = dx * dx + dy * dy;
-            const float radialWeight = std::exp(-distanceSquared / (2.0f * radiusSquared));
-            const float frontWeight = std::clamp(base.normal[2], 0.0f, 1.0f);
-            deformedVertices[index].position[2] -=
-                maximumDent * impactAmount * radialWeight * frontWeight;
+            const auto& position = simulatedPositions[renderToPhysics[index]];
+            renderVertices[index].position = {
+                position.x,
+                position.y,
+                position.z};
         }
 
         // Rebuild vertex normals from the deformed triangles for correct lighting.
-        std::vector<Vector3> accumulatedNormals(deformedVertices.size());
+        std::vector<Vector3> accumulatedNormals(renderVertices.size());
         for (std::size_t index = 0; index + 2 < baseMesh.indices.size(); index += 3)
         {
             const auto i0 = baseMesh.indices[index];
             const auto i1 = baseMesh.indices[index + 1];
             const auto i2 = baseMesh.indices[index + 2];
-            const auto point = [&deformedVertices](std::uint32_t vertex)
+            const auto point = [&renderVertices](std::uint32_t vertex)
             {
-                const auto& position = deformedVertices[vertex].position;
+                const auto& position = renderVertices[vertex].position;
                 return Vector3{position[0], position[1], position[2]};
             };
             const Vector3 edgeA = subtract(point(i1), point(i0));
@@ -274,11 +361,11 @@ namespace
             }
         }
 
-        for (std::size_t index = 0; index < deformedVertices.size(); ++index)
+        for (std::size_t index = 0; index < renderVertices.size(); ++index)
         {
             if (normalize(accumulatedNormals[index]))
             {
-                deformedVertices[index].normal = {
+                renderVertices[index].normal = {
                     accumulatedNormals[index].x,
                     accumulatedNormals[index].y,
                     accumulatedNormals[index].z};
@@ -298,6 +385,9 @@ namespace softphysics::engine
         softphysics::renderengine::MeshHandle gloveMesh;
         softphysics::renderengine::MeshData torsoBaseMesh;
         std::vector<softphysics::renderengine::MeshVertex> torsoDeformedVertices;
+        softphysics::physics::XpbdSoftBody torsoSimulation;
+        softphysics::physics::Aabb torsoCollisionProxy;
+        std::vector<std::uint32_t> torsoRenderToPhysics;
         softphysics::renderengine::Camera3D camera;
         CameraNavigation cameraNavigation;
         bool initialized = false;
@@ -389,6 +479,26 @@ namespace softphysics::engine
         }
         impl_->torsoBaseMesh = std::move(*torsoData);
         impl_->torsoDeformedVertices = impl_->torsoBaseMesh.vertices;
+        std::vector<PhysicsVector3> physicsVertices;
+        std::vector<std::uint32_t> physicsIndices;
+        make_welded_physics_surface(
+            impl_->torsoBaseMesh,
+            physicsVertices,
+            physicsIndices,
+            impl_->torsoRenderToPhysics);
+        std::string physicsError;
+        if (!impl_->torsoSimulation.initialize(
+                physicsVertices,
+                physicsIndices,
+                softphysics::physics::SoftBodyConfig{},
+                physicsError))
+        {
+            std::cerr << "Could not initialize the torso soft body: " << physicsError << "\n";
+            shutdown();
+            return false;
+        }
+        // The initial render bounds are a simple collider proxy, not the deforming surface itself.
+        impl_->torsoCollisionProxy = calculate_mesh_bounds(impl_->torsoBaseMesh);
         impl_->torsoMesh = impl_->renderer->create_mesh(impl_->torsoBaseMesh);
         if (!impl_->torsoMesh)
         {
@@ -422,15 +532,13 @@ namespace softphysics::engine
 
         impl_->running = true;
         int exitCode = 0;
-        const auto animationStart = std::chrono::steady_clock::now();
-        // This timed kinematic cycle is a stand-in until collision-driven motion exists.
-        constexpr float cycleDuration = 2.8f;
-        constexpr float approachDuration = 0.75f;
-        constexpr float contactHoldDuration = 0.18f;
-        constexpr float releaseDuration = 0.42f;
-        constexpr float gloveStartZ = 0.72f;
-        constexpr float gloveContactZ = 0.12f;
+        constexpr float fixedStepSeconds = 1.0f / 120.0f;
+        constexpr std::uint32_t maximumSubstepsPerFrame = 16;
+        float simulationAccumulator = 0.0f;
+        float simulationTime = 0.0f;
+        bool gloveWasInContact = false;
         auto previousCameraUpdate = std::chrono::steady_clock::now();
+        auto previousFrameUpdate = previousCameraUpdate;
         while (impl_->running)
         {
             softphysics::window::WindowEvent event;
@@ -489,6 +597,11 @@ namespace softphysics::engine
             if (impl_->renderer)
             {
                 const auto cameraUpdateTime = std::chrono::steady_clock::now();
+                const float frameDeltaSeconds = std::clamp(
+                    std::chrono::duration<float>(cameraUpdateTime - previousFrameUpdate).count(),
+                    0.0f,
+                    0.25f);
+                previousFrameUpdate = cameraUpdateTime;
                 const float cameraDeltaSeconds = std::clamp(
                     std::chrono::duration<float>(cameraUpdateTime - previousCameraUpdate).count(),
                     0.0f,
@@ -506,6 +619,63 @@ namespace softphysics::engine
                     continue;
                 }
 
+                simulationAccumulator += frameDeltaSeconds;
+                std::uint32_t substepCount = 0;
+                while (simulationAccumulator >= fixedStepSeconds &&
+                       substepCount < maximumSubstepsPerFrame)
+                {
+                    const float nextSimulationTime = simulationTime + fixedStepSeconds;
+                    const float previousGloveZ = glove_z_at(simulationTime);
+                    const float currentGloveZ = glove_z_at(nextSimulationTime);
+                    const PhysicsVector3 gloveVelocity{
+                        0.0f,
+                        0.0f,
+                        (currentGloveZ - previousGloveZ) / fixedStepSeconds};
+                    const softphysics::physics::SphereCollider gloveCollider{
+                        {0.0f, 0.025f, currentGloveZ},
+                        GloveRadiusMeters};
+                    auto contact = softphysics::physics::collide_sphere_aabb(
+                        gloveCollider,
+                        impl_->torsoCollisionProxy,
+                        gloveVelocity);
+                    if (contact)
+                    {
+                        const float closingSpeed = std::max(
+                            0.0f,
+                            -(gloveVelocity.x * contact->normal.x +
+                              gloveVelocity.y * contact->normal.y +
+                              gloveVelocity.z * contact->normal.z));
+                        if (!gloveWasInContact)
+                        {
+                            constexpr float gloveMassKg = 0.45f;
+                            constexpr float torsoMassKg = 18.0f;
+                            constexpr float restitution = 0.12f;
+                            const float effectiveMass =
+                                (gloveMassKg * torsoMassKg) / (gloveMassKg + torsoMassKg);
+                            contact->normalImpulse =
+                                std::min(
+                                    effectiveMass * (1.0f + restitution) * closingSpeed,
+                                    0.08f);
+                        }
+                        impl_->torsoSimulation.add_contact(*contact);
+                        gloveWasInContact = true;
+                    }
+                    else
+                    {
+                        gloveWasInContact = false;
+                    }
+
+                    impl_->torsoSimulation.step(fixedStepSeconds);
+                    simulationTime = nextSimulationTime;
+                    simulationAccumulator -= fixedStepSeconds;
+                    ++substepCount;
+                }
+                // Drop excess backlog instead of spiraling if rendering stalls for a long time.
+                if (simulationAccumulator >= fixedStepSeconds)
+                {
+                    simulationAccumulator = std::fmod(simulationAccumulator, fixedStepSeconds);
+                }
+
                 if (!impl_->renderer->begin_frame())
                 {
                     std::cerr << "Could not begin a renderer frame.\n";
@@ -514,35 +684,10 @@ namespace softphysics::engine
                     continue;
                 }
 
-                const float elapsedSeconds = std::chrono::duration<float>(
-                    std::chrono::steady_clock::now() - animationStart).count();
-                // A deterministic kinematic punch drives the first deformation pass;
-                // collision detection and force-based response will replace this later.
-                const float phase = std::fmod(elapsedSeconds, cycleDuration);
-                float gloveProgress = 0.0f;
-                float impactAmount = 0.0f;
-                if (phase < approachDuration)
-                {
-                    const float approach = phase / approachDuration;
-                    gloveProgress = smooth_step(0.0f, 1.0f, approach);
-                    impactAmount = smooth_step(0.68f, 1.0f, approach);
-                }
-                else if (phase < approachDuration + contactHoldDuration)
-                {
-                    gloveProgress = 1.0f;
-                    impactAmount = 1.0f;
-                }
-                else if (phase < approachDuration + contactHoldDuration + releaseDuration)
-                {
-                    const float release =
-                        (phase - approachDuration - contactHoldDuration) / releaseDuration;
-                    gloveProgress = 1.0f - smooth_step(0.0f, 1.0f, release);
-                    impactAmount = 1.0f - smooth_step(0.0f, 0.55f, release);
-                }
-
-                deform_torso_for_impact(
+                update_render_vertices(
                     impl_->torsoBaseMesh,
-                    impactAmount,
+                    impl_->torsoSimulation.surface_positions(),
+                    impl_->torsoRenderToPhysics,
                     impl_->torsoDeformedVertices);
                 if (!impl_->renderer->update_mesh_vertices(
                         impl_->torsoMesh,
@@ -560,7 +705,7 @@ namespace softphysics::engine
                 gloveTransform.position = {
                     0.0f,
                     0.025f,
-                    gloveStartZ + (gloveContactZ - gloveStartZ) * gloveProgress};
+                    glove_z_at(simulationTime + simulationAccumulator)};
                 impl_->renderer->draw_mesh(impl_->gloveMesh, gloveTransform);
                 if (!impl_->renderer->present())
                 {

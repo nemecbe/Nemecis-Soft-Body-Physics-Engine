@@ -14,7 +14,7 @@ game, but performance will be measured and improved as the simulation grows.
 
 ## Current state
 
-The project is at the rendering and deformation proof-of-concept stage. The
+The project now has a first physics and deformation proof of concept. The
 Windows test bed currently:
 
 - Opens an SDL window and renders through a Direct3D 12 adapter.
@@ -22,17 +22,24 @@ Windows test bed currently:
 - Creates a simple red sphere in code to stand in for a glove.
 - Animates the sphere toward and away from the torso.
 - Lets you move the test camera with **WASD** and rotate it with the **arrow keys**.
-- Applies a small procedural dent near a fixed contact point, then recalculates
-  mesh normals so the dent is visible under lighting.
+- Uses a fixed 120 Hz simulation step while rendering through the D3D12 adapter.
+- Detects sphere versus torso-AABB contact and estimates an impact impulse.
+- Welds coincident render vertices into a simulation surface, creates a simple
+  center-fan tetrahedral volume, and solves edge-length and volume constraints
+  with XPBD.
+- Applies a localized contact force to nearby body vertices and updates the
+  rendered mesh positions and normals.
 - Exposes the engine through a DLL entry point, separate from the test-bed
   executable.
 
-The punch motion and dent are currently scripted. There is not yet a physics
-simulation, collision detection, force-based response, mass or material model,
-skeletal animation system, or grappling logic. The current importer supports a
-single root-level GLB mesh with triangle primitives and position/normal data; it
-is intentionally a small first step rather than a general-purpose asset
-pipeline.
+The glove still follows a scripted kinematic punch, and the torso collider is a
+static axis-aligned box. The generated tetrahedra use one interior center point;
+this is a prototype for a star-shaped, closed mesh, not a general tetrahedral
+mesher. The lower edge of the torso is temporarily anchored in place. There is
+no self-collision, glove reaction, skeletal attachment, or grappling simulation
+yet. The current importer supports a single root-level GLB mesh with triangle
+primitives and position/normal data; it is intentionally a small first step
+rather than a general-purpose asset pipeline.
 
 ## Architecture direction
 
@@ -66,14 +73,14 @@ implementation is the only renderer adapter configured in this prototype.
 
 ## Next engineering steps
 
-1. Move the demo punch and deformation code out of the application loop into
-   small simulation components.
-2. Add basic collision shapes and contact data for the glove and torso.
-3. Drive a localized deformation from the contact point, normal, and penetration
-   or impact strength rather than a hard-coded point and timeline.
-4. Introduce mass and material parameters, then tune stability and frame cost.
-5. Build up from the torso test mesh toward a rigged fighter and more complete
-   character/arena assets.
+1. Replace the torso AABB with a collider that better follows the body shape and
+   can update as the body deforms.
+2. Inspect and tune contact, stiffness, damping, and mass parameters against
+   repeatable punch cases.
+3. Replace center-fan tetrahedra with a proper interior tetrahedral mesh and
+   validate that the solver handles the torso without inverted elements.
+4. Add self-collision and connect the body to a simple skeletal/rigid support.
+5. Profile the fixed-step solver, then expand toward a full fighter and arena.
 
 Prototype geometry is treated as meter-scale, with +Y up and +Z forward. The GLB
 loader converts glTF's right-handed coordinates into that engine convention.
