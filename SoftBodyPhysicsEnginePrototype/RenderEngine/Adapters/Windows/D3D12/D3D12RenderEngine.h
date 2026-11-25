@@ -20,8 +20,12 @@ namespace softphysics::renderengine::windows::d3d12
             softphysics::window::WindowHandle window,
             softphysics::core::Extent2D initialDrawableSize) override;
         bool resize(softphysics::core::Extent2D updatedSize) override;
+        bool set_camera(const Camera3D& camera) override;
         bool begin_frame() override;
         void clear(LinearColor color) override;
+        MeshHandle create_mesh(const MeshData& mesh) override;
+        void destroy_mesh(MeshHandle mesh) override;
+        void draw_mesh(MeshHandle mesh, const Transform3D& transform) override;
         bool present() override;
         void shutdown() override;
 

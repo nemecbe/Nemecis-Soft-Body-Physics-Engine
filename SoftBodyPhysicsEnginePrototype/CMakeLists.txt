@@ -39,7 +39,7 @@ if (WIN32)
       "RenderEngine/Adapters/Windows/D3D12/D3D12RenderEngine.cpp"
   )
   target_compile_definitions (SoftPhysicsEngine PRIVATE SOFTPHYSICS_HAS_D3D12_RENDERER=1)
-  target_link_libraries (SoftPhysicsPlatformGraphicsDependencies INTERFACE d3d12 dxgi)
+  target_link_libraries (SoftPhysicsPlatformGraphicsDependencies INTERFACE d3d12 dxgi d3dcompiler)
 elseif (APPLE)
   set (SOFTPHYSICS_GRAPHICS_BACKEND "Metal")
   find_library (SOFTPHYSICS_METAL_FRAMEWORK Metal REQUIRED)
