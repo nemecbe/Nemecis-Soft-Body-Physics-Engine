@@ -6,6 +6,25 @@
 
 namespace softphysics::window
 {
+    namespace
+    {
+        std::optional<KeyCode> translate_key(SDL_Keycode key)
+        {
+            switch (key)
+            {
+            case SDLK_W: return KeyCode::W;
+            case SDLK_A: return KeyCode::A;
+            case SDLK_S: return KeyCode::S;
+            case SDLK_D: return KeyCode::D;
+            case SDLK_UP: return KeyCode::ArrowUp;
+            case SDLK_DOWN: return KeyCode::ArrowDown;
+            case SDLK_LEFT: return KeyCode::ArrowLeft;
+            case SDLK_RIGHT: return KeyCode::ArrowRight;
+            default: return std::nullopt;
+            }
+        }
+    }
+
     SdlWindowSystem::~SdlWindowSystem()
     {
         for (const auto& [id, window] : windowsByHandle)
@@ -143,6 +162,34 @@ namespace softphysics::window
                 }
 
                 outEvent = WindowCloseRequested{handleIt->second};
+                return true;
+            }
+
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+            {
+                const auto handleIt = handlesBySdlId.find(event.window.windowID);
+                if (handleIt == handlesBySdlId.end())
+                {
+                    break;
+                }
+                outEvent = WindowFocusLost{handleIt->second};
+                return true;
+            }
+
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+            {
+                const auto handleIt = handlesBySdlId.find(event.key.windowID);
+                const auto key = translate_key(event.key.key);
+                if (handleIt == handlesBySdlId.end() || !key)
+                {
+                    break;
+                }
+                outEvent = KeyChanged{
+                    handleIt->second,
+                    *key,
+                    event.type == SDL_EVENT_KEY_DOWN,
+                    event.key.repeat};
                 return true;
             }
 

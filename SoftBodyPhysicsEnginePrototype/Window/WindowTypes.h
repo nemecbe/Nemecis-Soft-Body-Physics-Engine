@@ -40,6 +40,32 @@ namespace softphysics::window
         Extent2D drawable_size{};
     };
 
+    enum class KeyCode : std::uint8_t
+    {
+        W,
+        A,
+        S,
+        D,
+        ArrowUp,
+        ArrowDown,
+        ArrowLeft,
+        ArrowRight,
+        Count
+    };
+
+    struct KeyChanged
+    {
+        WindowHandle window{};
+        KeyCode key = KeyCode::W;
+        bool is_down = false;
+        bool repeat = false;
+    };
+
+    struct WindowFocusLost
+    {
+        WindowHandle window{};
+    };
+
     struct ApplicationQuitRequested
     {
     };
@@ -47,6 +73,8 @@ namespace softphysics::window
     using WindowEvent = std::variant<
         WindowCloseRequested,
         WindowResized,
+        KeyChanged,
+        WindowFocusLost,
         ApplicationQuitRequested
     >;
 };

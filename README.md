@@ -21,6 +21,7 @@ Windows test bed currently:
 - Loads the torso GLB from `assets/meshes/Torso_Test_Verticies.glb`.
 - Creates a simple red sphere in code to stand in for a glove.
 - Animates the sphere toward and away from the torso.
+- Lets you move the test camera with **WASD** and rotate it with the **arrow keys**.
 - Applies a small procedural dent near a fixed contact point, then recalculates
   mesh normals so the dent is visible under lighting.
 - Exposes the engine through a DLL entry point, separate from the test-bed

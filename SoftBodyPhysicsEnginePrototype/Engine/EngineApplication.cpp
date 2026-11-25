@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -27,6 +28,116 @@ namespace
     using softphysics::renderengine::MeshData;
     using softphysics::renderengine::MeshVertex;
     using softphysics::renderengine::Vector3;
+    using softphysics::window::KeyCode;
+
+    struct CameraNavigation
+    {
+        static constexpr std::size_t KeyCount = static_cast<std::size_t>(KeyCode::Count);
+        std::array<bool, KeyCount> keysDown{};
+        float yaw = 0.0f;
+        float pitch = 0.0f;
+        float focusDistance = 1.0f;
+    };
+
+    std::size_t key_index(KeyCode key)
+    {
+        return static_cast<std::size_t>(key);
+    }
+
+    Vector3 camera_forward(float yaw, float pitch)
+    {
+        const float horizontal = std::cos(pitch);
+        return {std::sin(yaw) * horizontal, std::sin(pitch), std::cos(yaw) * horizontal};
+    }
+
+    void initialize_camera_navigation(
+        const softphysics::renderengine::Camera3D& camera,
+        CameraNavigation& navigation)
+    {
+        Vector3 direction{
+            camera.target.x - camera.position.x,
+            camera.target.y - camera.position.y,
+            camera.target.z - camera.position.z};
+        const float lengthSquared = direction.x * direction.x + direction.y * direction.y +
+                                   direction.z * direction.z;
+        navigation.focusDistance = std::sqrt(lengthSquared);
+        if (std::isfinite(lengthSquared) && lengthSquared > 1.0e-12f)
+        {
+            const float inverseLength = 1.0f / navigation.focusDistance;
+            direction.x *= inverseLength;
+            direction.y *= inverseLength;
+            direction.z *= inverseLength;
+            navigation.yaw = std::atan2(direction.x, direction.z);
+            navigation.pitch = std::asin(std::clamp(direction.y, -1.0f, 1.0f));
+        }
+        else
+        {
+            navigation.focusDistance = 1.0f;
+        }
+    }
+
+    bool update_camera_navigation(
+        softphysics::renderengine::Camera3D& camera,
+        CameraNavigation& navigation,
+        float deltaSeconds)
+    {
+        // WASD moves in view-relative directions; arrow keys change yaw and pitch.
+        const auto down = [&navigation](KeyCode key)
+        {
+            return navigation.keysDown[key_index(key)];
+        };
+
+        const float yawInput = static_cast<float>(down(KeyCode::ArrowRight)) -
+                               static_cast<float>(down(KeyCode::ArrowLeft));
+        const float pitchInput = static_cast<float>(down(KeyCode::ArrowUp)) -
+                                 static_cast<float>(down(KeyCode::ArrowDown));
+        constexpr float turnSpeed = 1.5f;
+        constexpr float moveSpeed = 0.8f;
+        navigation.yaw += yawInput * turnSpeed * deltaSeconds;
+        navigation.pitch = std::clamp(
+            navigation.pitch + pitchInput * turnSpeed * deltaSeconds,
+            -1.45f,
+            1.45f);
+
+        const float forwardInput = static_cast<float>(down(KeyCode::W)) -
+                                   static_cast<float>(down(KeyCode::S));
+        const float strafeInput = static_cast<float>(down(KeyCode::D)) -
+                                  static_cast<float>(down(KeyCode::A));
+        const Vector3 forward = camera_forward(navigation.yaw, navigation.pitch);
+        const Vector3 right{std::cos(navigation.yaw), 0.0f, -std::sin(navigation.yaw)};
+        Vector3 movement{
+            forward.x * forwardInput + right.x * strafeInput,
+            forward.y * forwardInput,
+            forward.z * forwardInput + right.z * strafeInput};
+
+        const bool hasRotationInput = yawInput != 0.0f || pitchInput != 0.0f;
+        const bool hasMovementInput = forwardInput != 0.0f || strafeInput != 0.0f;
+        if (!hasRotationInput && !hasMovementInput)
+        {
+            return false;
+        }
+
+        const float movementLengthSquared = movement.x * movement.x +
+                                            movement.y * movement.y +
+                                            movement.z * movement.z;
+        if (hasMovementInput && std::isfinite(movementLengthSquared) &&
+            movementLengthSquared > 1.0e-12f)
+        {
+            const float inverseLength = 1.0f / std::sqrt(movementLengthSquared);
+            movement.x *= inverseLength;
+            movement.y *= inverseLength;
+            movement.z *= inverseLength;
+            camera.position.x += movement.x * moveSpeed * deltaSeconds;
+            camera.position.y += movement.y * moveSpeed * deltaSeconds;
+            camera.position.z += movement.z * moveSpeed * deltaSeconds;
+        }
+        const Vector3 newForward = camera_forward(navigation.yaw, navigation.pitch);
+        camera.target = {
+            camera.position.x + newForward.x * navigation.focusDistance,
+            camera.position.y + newForward.y * navigation.focusDistance,
+            camera.position.z + newForward.z * navigation.focusDistance};
+        return true;
+    }
 
     softphysics::renderengine::MeshData make_glove_sphere()
     {
@@ -187,6 +298,8 @@ namespace softphysics::engine
         softphysics::renderengine::MeshHandle gloveMesh;
         softphysics::renderengine::MeshData torsoBaseMesh;
         std::vector<softphysics::renderengine::MeshVertex> torsoDeformedVertices;
+        softphysics::renderengine::Camera3D camera;
+        CameraNavigation cameraNavigation;
         bool initialized = false;
         bool running = false;
     };
@@ -243,6 +356,8 @@ namespace softphysics::engine
         softphysics::renderengine::Camera3D camera;
         camera.position = {0.65f, 0.28f, 1.25f};
         camera.target = {0.0f, 0.0f, 0.0f};
+        impl_->camera = camera;
+        initialize_camera_navigation(impl_->camera, impl_->cameraNavigation);
         if (!impl_->renderer->set_camera(camera))
         {
             std::cerr << "Could not set up the test camera.\n";
@@ -315,6 +430,7 @@ namespace softphysics::engine
         constexpr float releaseDuration = 0.42f;
         constexpr float gloveStartZ = 0.72f;
         constexpr float gloveContactZ = 0.12f;
+        auto previousCameraUpdate = std::chrono::steady_clock::now();
         while (impl_->running)
         {
             softphysics::window::WindowEvent event;
@@ -348,6 +464,21 @@ namespace softphysics::engine
                         }
                     }
                 }
+                else if (const auto* key = std::get_if<softphysics::window::KeyChanged>(&event))
+                {
+                    if (key->window.id == impl_->window->id && key->key != KeyCode::Count)
+                    {
+                        impl_->cameraNavigation.keysDown[key_index(key->key)] = key->is_down;
+                    }
+                }
+                else if (const auto* focusLost =
+                             std::get_if<softphysics::window::WindowFocusLost>(&event))
+                {
+                    if (focusLost->window.id == impl_->window->id)
+                    {
+                        impl_->cameraNavigation.keysDown.fill(false);
+                    }
+                }
             }
 
             if (!impl_->running)
@@ -357,6 +488,24 @@ namespace softphysics::engine
 
             if (impl_->renderer)
             {
+                const auto cameraUpdateTime = std::chrono::steady_clock::now();
+                const float cameraDeltaSeconds = std::clamp(
+                    std::chrono::duration<float>(cameraUpdateTime - previousCameraUpdate).count(),
+                    0.0f,
+                    0.1f);
+                previousCameraUpdate = cameraUpdateTime;
+                if (update_camera_navigation(
+                        impl_->camera,
+                        impl_->cameraNavigation,
+                        cameraDeltaSeconds) &&
+                    !impl_->renderer->set_camera(impl_->camera))
+                {
+                    std::cerr << "Could not update the camera from keyboard input.\n";
+                    impl_->running = false;
+                    exitCode = 1;
+                    continue;
+                }
+
                 if (!impl_->renderer->begin_frame())
                 {
                     std::cerr << "Could not begin a renderer frame.\n";
