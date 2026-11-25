@@ -16,6 +16,8 @@ namespace softphysics::window
             case SDLK_A: return KeyCode::A;
             case SDLK_S: return KeyCode::S;
             case SDLK_D: return KeyCode::D;
+            case SDLK_R: return KeyCode::R;
+            case SDLK_T: return KeyCode::T;
             case SDLK_UP: return KeyCode::ArrowUp;
             case SDLK_DOWN: return KeyCode::ArrowDown;
             case SDLK_LEFT: return KeyCode::ArrowLeft;

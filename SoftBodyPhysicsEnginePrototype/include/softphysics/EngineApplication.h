@@ -16,6 +16,8 @@ namespace softphysics::engine
         std::uint32_t windowHeight = 720;
         bool resizable = true;
         bool highDpi = true;
+        // Enables seeded punch-profile variation at startup; R toggles it at runtime.
+        bool randomizePunches = false;
     };
 
     // Public runtime entry point. Platform systems and renderer implementations

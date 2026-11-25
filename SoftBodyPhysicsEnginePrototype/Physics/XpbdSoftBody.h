@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ namespace softphysics::physics
         float maximumContactForce = 12.0f;
         float contactRadius = 0.13f;
         float anchoredBottomBand = 0.025f;
+        float balanceReleaseImpulseNs = 0.8f;
+        float gravityMetersPerSecondSquared = 9.81f;
         std::uint32_t solverIterations = 6;
     };
 
@@ -35,8 +38,12 @@ namespace softphysics::physics
             const SoftBodyConfig& config,
             std::string& errorMessage);
 
+        [[nodiscard]] std::optional<Contact> collide_sphere(
+            const SphereCollider& sphere,
+            Vector3 sphereVelocity = {}) const;
         void add_contact(const Contact& contact);
         void step(float fixedDeltaSeconds);
+        void reset() noexcept;
 
         [[nodiscard]] std::span<const Vector3> surface_positions() const noexcept;
         [[nodiscard]] Aabb surface_bounds() const noexcept;
@@ -69,9 +76,18 @@ namespace softphysics::physics
         std::vector<Vector3> velocities_;
         std::vector<Vector3> externalForces_;
         std::vector<float> inverseMasses_;
+        std::vector<float> freeInverseMasses_;
+        std::vector<bool> anchoredVertices_;
+        std::vector<std::uint32_t> surfaceIndices_;
+        std::vector<Contact> pendingContacts_;
         std::vector<DistanceConstraint> distanceConstraints_;
         std::vector<Tetrahedron> tetrahedra_;
         std::size_t surfaceVertexCount_ = 0;
+        float groundY_ = 0.0f;
+        bool supportReleased_ = false;
         bool initialized_ = false;
+
+        void release_support();
+        void solve_contact(Contact& contact);
     };
 }

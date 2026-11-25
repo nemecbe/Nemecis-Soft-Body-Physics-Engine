@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace softphysics::physics
@@ -31,5 +32,13 @@ namespace softphysics::physics
         Vector3 relativeVelocity{};
         float penetration = 0.0f;
         float normalImpulse = 0.0f;
+        // Tangential impulse transferred to the body models the glove's hook/shear motion.
+        Vector3 tangentialImpulse{};
+        std::array<std::uint32_t, 3> surfaceVertices{};
+        std::array<float, 3> surfaceWeights{};
+        Vector3 colliderCenter{};
+        float colliderRadius = 0.0f;
+        float maximumContactForceNewtons = 12.0f;
+        bool hasSurfaceFeature = false;
     };
 }

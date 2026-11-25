@@ -29,6 +29,59 @@ namespace softphysics::physics
             return dot(subtract(b, a), cross(subtract(c, a), subtract(d, a))) / 6.0f;
         }
 
+        struct TrianglePoint
+        {
+            Vector3 point{};
+            std::array<float, 3> weights{};
+        };
+
+        TrianglePoint closest_point_on_triangle(Vector3 point, Vector3 a, Vector3 b, Vector3 c)
+        {
+            const Vector3 ab = subtract(b, a);
+            const Vector3 ac = subtract(c, a);
+            const Vector3 ap = subtract(point, a);
+            const float d1 = dot(ab, ap);
+            const float d2 = dot(ac, ap);
+            if (d1 <= 0.0f && d2 <= 0.0f) return {a, {1.0f, 0.0f, 0.0f}};
+
+            const Vector3 bp = subtract(point, b);
+            const float d3 = dot(ab, bp);
+            const float d4 = dot(ac, bp);
+            if (d3 >= 0.0f && d4 <= d3) return {b, {0.0f, 1.0f, 0.0f}};
+
+            const float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+            {
+                const float v = d1 / (d1 - d3);
+                return {add(a, multiply(ab, v)), {1.0f - v, v, 0.0f}};
+            }
+
+            const Vector3 cp = subtract(point, c);
+            const float d5 = dot(ab, cp);
+            const float d6 = dot(ac, cp);
+            if (d6 >= 0.0f && d5 <= d6) return {c, {0.0f, 0.0f, 1.0f}};
+
+            const float vb = d5 * d2 - d1 * d6;
+            if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+            {
+                const float w = d2 / (d2 - d6);
+                return {add(a, multiply(ac, w)), {1.0f - w, 0.0f, w}};
+            }
+
+            const float va = d3 * d6 - d5 * d4;
+            if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f)
+            {
+                const Vector3 bc = subtract(c, b);
+                const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                return {add(b, multiply(bc, w)), {0.0f, 1.0f - w, w}};
+            }
+
+            const float inverse = 1.0f / (va + vb + vc);
+            const float v = vb * inverse;
+            const float w = vc * inverse;
+            return {add(add(a, multiply(ab, v)), multiply(ac, w)), {1.0f - v - w, v, w}};
+        }
+
         std::uint64_t edge_key(std::uint32_t a, std::uint32_t b)
         {
             if (a > b)
@@ -56,6 +109,9 @@ namespace softphysics::physics
 
         config_ = config;
         surfaceVertexCount_ = surfaceVertices.size();
+        surfaceIndices_.assign(triangleIndices.begin(), triangleIndices.end());
+        pendingContacts_.clear();
+        supportReleased_ = false;
         positions_.assign(surfaceVertices.begin(), surfaceVertices.end());
         restPositions_ = positions_;
         Vector3 center{};
@@ -68,6 +124,7 @@ namespace softphysics::physics
         center = multiply(center, 1.0f / static_cast<float>(surfaceVertices.size()));
         positions_.push_back(center);
         restPositions_.push_back(center);
+        groundY_ = minimumY;
 
         tetrahedra_.clear();
         tetrahedra_.reserve(triangleIndices.size() / 3);
@@ -120,14 +177,18 @@ namespace softphysics::physics
         velocities_.assign(positions_.size(), {});
         externalForces_.assign(positions_.size(), {});
         inverseMasses_.resize(positions_.size());
+        freeInverseMasses_.resize(positions_.size());
+        anchoredVertices_.assign(positions_.size(), false);
         for (std::size_t index = 0; index < positions_.size(); ++index)
         {
             inverseMasses_[index] = masses[index] > 1.0e-8f ? 1.0f / masses[index] : 0.0f;
+            freeInverseMasses_[index] = inverseMasses_[index];
             if (index < surfaceVertexCount_ &&
                 positions_[index].y <= minimumY + config_.anchoredBottomBand)
             {
                 // Temporary stand-in for attachment to a fighter's skeleton/legs.
                 inverseMasses_[index] = 0.0f;
+                anchoredVertices_[index] = true;
             }
         }
 
@@ -157,11 +218,116 @@ namespace softphysics::physics
         return true;
     }
 
+    std::optional<Contact> XpbdSoftBody::collide_sphere(
+        const SphereCollider& sphere,
+        Vector3 sphereVelocity) const
+    {
+        if (!initialized_ || !std::isfinite(sphere.radius) || sphere.radius <= 0.0f)
+        {
+            return std::nullopt;
+        }
+
+        std::optional<Contact> closestContact;
+        float closestDistanceSquared = sphere.radius * sphere.radius;
+        for (std::size_t index = 0; index + 2 < surfaceIndices_.size(); index += 3)
+        {
+            const std::array<std::uint32_t, 3> vertices{
+                surfaceIndices_[index], surfaceIndices_[index + 1], surfaceIndices_[index + 2]};
+            if (vertices[0] >= surfaceVertexCount_ || vertices[1] >= surfaceVertexCount_ ||
+                vertices[2] >= surfaceVertexCount_)
+            {
+                continue;
+            }
+
+            const auto closest = closest_point_on_triangle(
+                sphere.center,
+                positions_[vertices[0]],
+                positions_[vertices[1]],
+                positions_[vertices[2]]);
+            const Vector3 separation = subtract(sphere.center, closest.point);
+            const float distanceSquared = dot(separation, separation);
+            if (distanceSquared >= closestDistanceSquared)
+            {
+                continue;
+            }
+
+            const float distance = std::sqrt(distanceSquared);
+            Vector3 normal{};
+            if (distance > 1.0e-7f)
+            {
+                normal = multiply(separation, 1.0f / distance);
+            }
+            else
+            {
+                normal = cross(
+                    subtract(positions_[vertices[1]], positions_[vertices[0]]),
+                    subtract(positions_[vertices[2]], positions_[vertices[0]]));
+                const float normalLength = length(normal);
+                if (normalLength <= 1.0e-8f)
+                {
+                    continue;
+                }
+                normal = multiply(normal, 1.0f / normalLength);
+                const Vector3 triangleCenter = multiply(
+                    add(add(positions_[vertices[0]], positions_[vertices[1]]),
+                        positions_[vertices[2]]),
+                    1.0f / 3.0f);
+                if (dot(subtract(sphere.center, triangleCenter), normal) < 0.0f)
+                {
+                    normal = multiply(normal, -1.0f);
+                }
+            }
+
+            Contact contact;
+            contact.point = closest.point;
+            contact.normal = normal;
+            contact.relativeVelocity = sphereVelocity;
+            contact.penetration = sphere.radius - distance;
+            contact.surfaceVertices = vertices;
+            contact.surfaceWeights = closest.weights;
+            contact.colliderCenter = sphere.center;
+            contact.colliderRadius = sphere.radius;
+            contact.hasSurfaceFeature = true;
+            closestDistanceSquared = distanceSquared;
+            closestContact = contact;
+        }
+        return closestContact;
+    }
+
+    void XpbdSoftBody::release_support()
+    {
+        if (supportReleased_)
+        {
+            return;
+        }
+        supportReleased_ = true;
+        for (std::size_t index = 0; index < anchoredVertices_.size(); ++index)
+        {
+            if (anchoredVertices_[index])
+            {
+                inverseMasses_[index] = freeInverseMasses_[index];
+            }
+        }
+    }
+
     void XpbdSoftBody::add_contact(const Contact& contact)
     {
         if (!initialized_ || contact.penetration <= 0.0f)
         {
             return;
+        }
+
+        if (contact.hasSurfaceFeature)
+        {
+            pendingContacts_.push_back(contact);
+        }
+
+        const Vector3 totalImpulse = add(
+            multiply(contact.normal, -contact.normalImpulse),
+            contact.tangentialImpulse);
+        if (length(totalImpulse) >= config_.balanceReleaseImpulseNs)
+        {
+            release_support();
         }
 
         Vector3 normal = contact.normal;
@@ -207,12 +373,18 @@ namespace softphysics::physics
 
             if (contact.normalImpulse > 0.0f)
             {
-                const float velocityChange = contact.normalImpulse * weight * inverseMasses_[index];
-                velocities_[index] = add(velocities_[index], multiply(bodyDirection, velocityChange));
+                const Vector3 impulse = add(
+                    multiply(bodyDirection, contact.normalImpulse),
+                    contact.tangentialImpulse);
+                velocities_[index] = add(
+                    velocities_[index],
+                    multiply(impulse, weight * inverseMasses_[index]));
             }
             const float forceMagnitude = std::min(
-                config_.contactStiffness * contact.penetration,
-                config_.maximumContactForce);
+                std::min(
+                    config_.contactStiffness * contact.penetration,
+                    config_.maximumContactForce),
+                std::clamp(contact.maximumContactForceNewtons, 0.0f, config_.maximumContactForce));
             const Vector3 force = multiply(bodyDirection, forceMagnitude * weight);
             externalForces_[index] = add(externalForces_[index], force);
         }
@@ -240,6 +412,11 @@ namespace softphysics::physics
             velocities_[index] = add(
                 velocities_[index],
                 multiply(externalForces_[index], inverseMasses_[index] * fixedDeltaSeconds));
+            if (supportReleased_)
+            {
+                velocities_[index].y -=
+                    config_.gravityMetersPerSecondSquared * fixedDeltaSeconds;
+            }
             velocities_[index] = multiply(velocities_[index], dampingFactor);
             positions_[index] = add(positions_[index], multiply(velocities_[index], fixedDeltaSeconds));
             externalForces_[index] = {};
@@ -267,6 +444,17 @@ namespace softphysics::physics
             {
                 solve_volume(tetrahedron, volumeAlpha);
             }
+            for (auto& contact : pendingContacts_)
+            {
+                solve_contact(contact);
+            }
+            if (supportReleased_)
+            {
+                for (std::size_t index = 0; index < surfaceVertexCount_; ++index)
+                {
+                    positions_[index].y = std::max(positions_[index].y, groundY_);
+                }
+            }
         }
 
         // Reconstruct velocity from corrected positions so constraints affect the next step.
@@ -278,6 +466,82 @@ namespace softphysics::physics
                     subtract(positions_[index], previousPositions[index]),
                     dampingFactor / fixedDeltaSeconds);
             }
+        }
+        pendingContacts_.clear();
+    }
+
+    void XpbdSoftBody::reset() noexcept
+    {
+        if (!initialized_)
+        {
+            return;
+        }
+
+        std::copy(restPositions_.begin(), restPositions_.end(), positions_.begin());
+        std::fill(velocities_.begin(), velocities_.end(), Vector3{});
+        std::fill(externalForces_.begin(), externalForces_.end(), Vector3{});
+        for (std::size_t index = 0; index < inverseMasses_.size(); ++index)
+        {
+            inverseMasses_[index] = anchoredVertices_[index]
+                ? 0.0f
+                : freeInverseMasses_[index];
+        }
+        for (auto& constraint : distanceConstraints_)
+        {
+            constraint.lambda = 0.0f;
+        }
+        for (auto& tetrahedron : tetrahedra_)
+        {
+            tetrahedron.lambda = 0.0f;
+        }
+        pendingContacts_.clear();
+        supportReleased_ = false;
+    }
+
+    void XpbdSoftBody::solve_contact(Contact& contact)
+    {
+        if (!contact.hasSurfaceFeature)
+        {
+            return;
+        }
+
+        Vector3 surfacePoint{};
+        float denominator = 0.0f;
+        for (std::size_t index = 0; index < 3; ++index)
+        {
+            const auto vertex = contact.surfaceVertices[index];
+            if (vertex >= surfaceVertexCount_)
+            {
+                return;
+            }
+            const float barycentric = std::max(contact.surfaceWeights[index], 0.0f);
+            surfacePoint = add(surfacePoint, multiply(positions_[vertex], barycentric));
+            denominator += inverseMasses_[vertex] * barycentric * barycentric;
+        }
+        if (denominator <= 1.0e-12f)
+        {
+            return;
+        }
+
+        const Vector3 separation = subtract(contact.colliderCenter, surfacePoint);
+        const float distance = length(separation);
+        if (!std::isfinite(distance) || distance >= contact.colliderRadius)
+        {
+            return;
+        }
+        Vector3 normal = contact.normal;
+        if (distance > 1.0e-8f)
+        {
+            normal = multiply(separation, 1.0f / distance);
+        }
+        const float correction = (contact.colliderRadius - distance) / denominator;
+        for (std::size_t index = 0; index < 3; ++index)
+        {
+            const auto vertex = contact.surfaceVertices[index];
+            const float barycentric = std::max(contact.surfaceWeights[index], 0.0f);
+            positions_[vertex] = subtract(
+                positions_[vertex],
+                multiply(normal, inverseMasses_[vertex] * barycentric * correction));
         }
     }
 

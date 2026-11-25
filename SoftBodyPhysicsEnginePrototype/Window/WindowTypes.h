@@ -50,6 +50,8 @@ namespace softphysics::window
         ArrowDown,
         ArrowLeft,
         ArrowRight,
+        R,
+        T,
         Count
     };
 

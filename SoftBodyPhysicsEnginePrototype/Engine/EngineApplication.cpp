@@ -1,7 +1,6 @@
 #include <softphysics/EngineApplication.h>
 
 #include "../Assets/Gltf/GlbMeshLoader.h"
-#include "../Physics/Collision.h"
 #include "../Physics/XpbdSoftBody.h"
 #include "../RenderEngine/IRenderEngine.h"
 #include "../Window/SdlWindowSystem/SdlWindowSystem.h"
@@ -19,6 +18,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <thread>
@@ -29,11 +29,13 @@ namespace
 {
     constexpr float GloveRadiusMeters = 0.075f;
     constexpr float GloveStartZ = 0.72f;
-    constexpr float GloveContactZ = 0.12f;
+    constexpr float MaximumRandomImpactForceNewtons = 1.0f;
     constexpr float PunchCycleSeconds = 2.8f;
     constexpr float PunchApproachSeconds = 0.75f;
     constexpr float PunchHoldSeconds = 0.18f;
     constexpr float PunchReleaseSeconds = 0.42f;
+    constexpr float PunchAttackEndSeconds =
+        PunchApproachSeconds + PunchHoldSeconds + PunchReleaseSeconds;
 
     using softphysics::renderengine::LinearColor;
     using softphysics::renderengine::MeshData;
@@ -204,29 +206,203 @@ namespace
         return t * t * (3.0f - 2.0f * t);
     }
 
-    float glove_progress_at(float simulationTime)
+    struct PunchProfile
+    {
+        PhysicsVector3 start{};
+        PhysicsVector3 control{};
+        PhysicsVector3 target{};
+        PhysicsVector3 approachNormal{0.0f, 0.0f, 1.0f};
+        PhysicsVector3 arcDirection{};
+        float arcMeters = 0.0f;
+        const char* name = "Fixed straight punch";
+        // Random force is normalized to 0-1 and also scales the computed impact impulse.
+        float impactStrength = 1.0f;
+        float impactForceNewtons = 12.0f;
+    };
+
+    PhysicsVector3 physics_add(PhysicsVector3 a, PhysicsVector3 b)
+    {
+        return {a.x + b.x, a.y + b.y, a.z + b.z};
+    }
+
+    PhysicsVector3 physics_subtract(PhysicsVector3 a, PhysicsVector3 b)
+    {
+        return {a.x - b.x, a.y - b.y, a.z - b.z};
+    }
+
+    PhysicsVector3 physics_scale(PhysicsVector3 value, float scale)
+    {
+        return {value.x * scale, value.y * scale, value.z * scale};
+    }
+
+    bool physics_normalize(PhysicsVector3& value)
+    {
+        const float lengthSquared = value.x * value.x + value.y * value.y + value.z * value.z;
+        if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-12f)
+        {
+            return false;
+        }
+        value = physics_scale(value, 1.0f / std::sqrt(lengthSquared));
+        return true;
+    }
+
+    PunchProfile fixed_punch_profile(const softphysics::physics::Aabb& bounds)
+    {
+        const float centerX = (bounds.minimum.x + bounds.maximum.x) * 0.5f;
+        const float centerY = (bounds.minimum.y + bounds.maximum.y) * 0.5f;
+        const PhysicsVector3 start{
+            centerX,
+            centerY,
+            bounds.maximum.z + GloveStartZ};
+        const PhysicsVector3 target{
+            centerX,
+            centerY,
+            bounds.maximum.z + GloveRadiusMeters - 0.008f};
+        return {
+            start,
+            physics_scale(physics_add(start, target), 0.5f),
+            target,
+            {0.0f, 0.0f, 1.0f},
+            {},
+            0.0f,
+            "Fixed straight punch"};
+    }
+
+    PunchProfile random_punch_profile(
+        const softphysics::physics::Aabb& bounds,
+        std::mt19937& random)
+    {
+        std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+        std::uniform_real_distribution<float> impactForce(
+            0.0f,
+            MaximumRandomImpactForceNewtons);
+        std::uniform_int_distribution<int> kind(0, 4);
+        const float width = bounds.maximum.x - bounds.minimum.x;
+        const float height = bounds.maximum.y - bounds.minimum.y;
+        const float centerX = (bounds.minimum.x + bounds.maximum.x) * 0.5f;
+        const float centerY = (bounds.minimum.y + bounds.maximum.y) * 0.5f;
+        // Keep randomized impacts on the visible front silhouette. The proxy is
+        // an AABB, so its side and bottom corners are not reliable visual targets.
+        const PhysicsVector3 surfacePoint{
+            centerX + unit(random) * width * 0.12f,
+            centerY + unit(random) * height * 0.12f,
+            bounds.maximum.z};
+        PhysicsVector3 normal{};
+        PhysicsVector3 arcDirection{};
+        float arcMeters = 0.0f;
+        const int punchKind = kind(random);
+        const char* name = "Straight";
+
+        if (punchKind == 0)
+        {
+            name = "Straight";
+            normal = {unit(random) * 0.35f, unit(random) * 0.2f, 1.0f};
+        }
+        else if (punchKind == 1 || punchKind == 2)
+        {
+            const float side = punchKind == 1 ? -1.0f : 1.0f;
+            name = punchKind == 1 ? "Left hook" : "Right hook";
+            normal = {side, unit(random) * 0.15f, 0.35f + (unit(random) + 1.0f) * 0.2f};
+            arcMeters = 0.075f;
+        }
+        else if (punchKind == 3)
+        {
+            name = "Uppercut";
+            normal = {unit(random) * 0.12f, -1.0f, 0.35f + (unit(random) + 1.0f) * 0.2f};
+        }
+        else
+        {
+            name = "Overhand";
+            normal = {unit(random) * 0.2f, 0.75f, 0.65f};
+        }
+
+        if (!physics_normalize(normal))
+        {
+            normal = {0.0f, 0.0f, 1.0f};
+        }
+        if (arcMeters > 0.0f)
+        {
+            arcDirection = {-normal.z, 0.0f, normal.x};
+            if (!physics_normalize(arcDirection))
+            {
+                arcDirection = {1.0f, 0.0f, 0.0f};
+            }
+        }
+
+        const PhysicsVector3 target = physics_add(
+            surfacePoint,
+            physics_scale(normal, GloveRadiusMeters - 0.008f));
+        // All profiles launch from a shared safe staging point; the control point
+        // sets the incoming direction at contact without teleporting the glove.
+        const PhysicsVector3 start{
+            centerX,
+            centerY,
+            bounds.maximum.z + 0.72f};
+        const PhysicsVector3 control = physics_add(target, physics_scale(normal, 0.32f));
+        const float impactForceNewtons = impactForce(random);
+        const float impactStrength = impactForceNewtons / MaximumRandomImpactForceNewtons;
+        return {
+            start,
+            control,
+            target,
+            normal,
+            arcDirection,
+            arcMeters,
+            name,
+            impactStrength,
+            impactForceNewtons};
+    }
+
+    PhysicsVector3 punch_position_at(
+        const PunchProfile& current,
+        const PunchProfile& next,
+        float simulationTime)
     {
         const float phase = std::fmod(simulationTime, PunchCycleSeconds);
+        float progress = 0.0f;
         if (phase < PunchApproachSeconds)
         {
-            return smooth_step(0.0f, 1.0f, phase / PunchApproachSeconds);
+            progress = smooth_step(0.0f, 1.0f, phase / PunchApproachSeconds);
         }
-        if (phase < PunchApproachSeconds + PunchHoldSeconds)
+        else if (phase < PunchApproachSeconds + PunchHoldSeconds)
         {
-            return 1.0f;
+            progress = 1.0f;
         }
-        if (phase < PunchApproachSeconds + PunchHoldSeconds + PunchReleaseSeconds)
+        else if (phase < PunchAttackEndSeconds)
         {
             const float release = (phase - PunchApproachSeconds - PunchHoldSeconds) /
                                   PunchReleaseSeconds;
-            return 1.0f - smooth_step(0.0f, 1.0f, release);
+            progress = 1.0f - smooth_step(0.0f, 1.0f, release);
         }
-        return 0.0f;
-    }
+        else
+        {
+            // Reposition during the idle part of the cycle to avoid a visible teleport.
+            const float idleProgress = smooth_step(
+                0.0f,
+                1.0f,
+                (phase - PunchAttackEndSeconds) /
+                    (PunchCycleSeconds - PunchAttackEndSeconds));
+            return physics_add(
+                current.start,
+                physics_scale(physics_subtract(next.start, current.start), idleProgress));
+        }
 
-    float glove_z_at(float simulationTime)
-    {
-        return GloveStartZ + (GloveContactZ - GloveStartZ) * glove_progress_at(simulationTime);
+        const float remaining = 1.0f - progress;
+        PhysicsVector3 position = physics_add(
+            physics_add(
+                physics_scale(current.start, remaining * remaining),
+                physics_scale(current.control, 2.0f * remaining * progress)),
+            physics_scale(current.target, progress * progress));
+        if (current.arcMeters > 0.0f)
+        {
+            constexpr float Pi = 3.14159265f;
+            position = physics_add(
+                position,
+                physics_scale(
+                    current.arcDirection,
+                    current.arcMeters * std::sin(Pi * progress)));
+        }
+        return position;
     }
 
     Vector3 subtract(Vector3 a, Vector3 b)
@@ -254,24 +430,6 @@ namespace
         value.y *= inverseLength;
         value.z *= inverseLength;
         return true;
-    }
-
-    softphysics::physics::Aabb calculate_mesh_bounds(const MeshData& mesh)
-    {
-        const auto& first = mesh.vertices.front().position;
-        softphysics::physics::Aabb bounds{
-            {first[0], first[1], first[2]},
-            {first[0], first[1], first[2]}};
-        for (const auto& vertex : mesh.vertices)
-        {
-            bounds.minimum.x = std::min(bounds.minimum.x, vertex.position[0]);
-            bounds.minimum.y = std::min(bounds.minimum.y, vertex.position[1]);
-            bounds.minimum.z = std::min(bounds.minimum.z, vertex.position[2]);
-            bounds.maximum.x = std::max(bounds.maximum.x, vertex.position[0]);
-            bounds.maximum.y = std::max(bounds.maximum.y, vertex.position[1]);
-            bounds.maximum.z = std::max(bounds.maximum.z, vertex.position[2]);
-        }
-        return bounds;
     }
 
     void make_welded_physics_surface(
@@ -386,10 +544,10 @@ namespace softphysics::engine
         softphysics::renderengine::MeshData torsoBaseMesh;
         std::vector<softphysics::renderengine::MeshVertex> torsoDeformedVertices;
         softphysics::physics::XpbdSoftBody torsoSimulation;
-        softphysics::physics::Aabb torsoCollisionProxy;
         std::vector<std::uint32_t> torsoRenderToPhysics;
         softphysics::renderengine::Camera3D camera;
         CameraNavigation cameraNavigation;
+        bool randomizePunches = false;
         bool initialized = false;
         bool running = false;
     };
@@ -410,6 +568,7 @@ namespace softphysics::engine
         {
             return false;
         }
+        impl_->randomizePunches = config.randomizePunches;
 
         // Platform objects are owned behind interfaces; this prototype currently selects SDL + D3D12.
         impl_->windowSystem = std::make_unique<softphysics::window::SdlWindowSystem>();
@@ -497,8 +656,6 @@ namespace softphysics::engine
             shutdown();
             return false;
         }
-        // The initial render bounds are a simple collider proxy, not the deforming surface itself.
-        impl_->torsoCollisionProxy = calculate_mesh_bounds(impl_->torsoBaseMesh);
         impl_->torsoMesh = impl_->renderer->create_mesh(impl_->torsoBaseMesh);
         if (!impl_->torsoMesh)
         {
@@ -537,6 +694,20 @@ namespace softphysics::engine
         float simulationAccumulator = 0.0f;
         float simulationTime = 0.0f;
         bool gloveWasInContact = false;
+        std::mt19937 punchRandom(0x534F4654u);
+        PunchProfile activePunch = impl_->randomizePunches
+            ? random_punch_profile(impl_->torsoSimulation.surface_bounds(), punchRandom)
+            : fixed_punch_profile(impl_->torsoSimulation.surface_bounds());
+        PunchProfile nextPunch = impl_->randomizePunches
+            ? random_punch_profile(impl_->torsoSimulation.surface_bounds(), punchRandom)
+            : fixed_punch_profile(impl_->torsoSimulation.surface_bounds());
+        std::uint64_t activePunchCycle = 0;
+        std::cout << "Punch mode: "
+                  << (impl_->randomizePunches ? "randomized" : "fixed straight")
+                  << " (press R to toggle).\n";
+        std::cout << "Punch profile: " << activePunch.name << " (impact force setting "
+                  << activePunch.impactForceNewtons << " N).\n";
+        PhysicsVector3 previousGlovePosition = punch_position_at(activePunch, nextPunch, 0.0f);
         auto previousCameraUpdate = std::chrono::steady_clock::now();
         auto previousFrameUpdate = previousCameraUpdate;
         while (impl_->running)
@@ -574,7 +745,34 @@ namespace softphysics::engine
                 }
                 else if (const auto* key = std::get_if<softphysics::window::KeyChanged>(&event))
                 {
-                    if (key->window.id == impl_->window->id && key->key != KeyCode::Count)
+                    if (key->window.id == impl_->window->id && key->key == KeyCode::T &&
+                        key->is_down && !key->repeat)
+                    {
+                        impl_->torsoSimulation.reset();
+                        simulationTime = 0.0f;
+                        simulationAccumulator = 0.0f;
+                        gloveWasInContact = false;
+                        punchRandom.seed(0x534F4654u);
+                        const auto torsoBounds = impl_->torsoSimulation.surface_bounds();
+                        activePunch = impl_->randomizePunches
+                            ? random_punch_profile(torsoBounds, punchRandom)
+                            : fixed_punch_profile(torsoBounds);
+                        nextPunch = impl_->randomizePunches
+                            ? random_punch_profile(torsoBounds, punchRandom)
+                            : fixed_punch_profile(torsoBounds);
+                        activePunchCycle = 0;
+                        previousGlovePosition = punch_position_at(activePunch, nextPunch, 0.0f);
+                        std::cout << "Torso and punch cycle reset.\n";
+                    }
+                    else if (key->window.id == impl_->window->id && key->key == KeyCode::R &&
+                        key->is_down && !key->repeat)
+                    {
+                        impl_->randomizePunches = !impl_->randomizePunches;
+                        std::cout << "Random punch profiles "
+                                  << (impl_->randomizePunches ? "enabled" : "disabled")
+                                  << "; the queued profile plays before the mode change takes effect.\n";
+                    }
+                    else if (key->window.id == impl_->window->id && key->key != KeyCode::Count)
                     {
                         impl_->cameraNavigation.keysDown[key_index(key->key)] = key->is_down;
                     }
@@ -625,18 +823,34 @@ namespace softphysics::engine
                        substepCount < maximumSubstepsPerFrame)
                 {
                     const float nextSimulationTime = simulationTime + fixedStepSeconds;
-                    const float previousGloveZ = glove_z_at(simulationTime);
-                    const float currentGloveZ = glove_z_at(nextSimulationTime);
-                    const PhysicsVector3 gloveVelocity{
-                        0.0f,
-                        0.0f,
-                        (currentGloveZ - previousGloveZ) / fixedStepSeconds};
+                    const auto nextCycle = static_cast<std::uint64_t>(
+                        nextSimulationTime / PunchCycleSeconds);
+                    if (nextCycle != activePunchCycle)
+                    {
+                        activePunch = nextPunch;
+                        activePunchCycle = nextCycle;
+                        nextPunch = impl_->randomizePunches
+                            ? random_punch_profile(
+                                  impl_->torsoSimulation.surface_bounds(), punchRandom)
+                            : fixed_punch_profile(impl_->torsoSimulation.surface_bounds());
+                        gloveWasInContact = false;
+                        std::cout << "Punch profile: " << activePunch.name
+                                  << " (impact force setting "
+                                  << activePunch.impactForceNewtons << " N).\n";
+                    }
+
+                    const PhysicsVector3 currentGlovePosition = punch_position_at(
+                        activePunch,
+                        nextPunch,
+                        nextSimulationTime);
+                    const PhysicsVector3 gloveVelocity = physics_scale(
+                        physics_subtract(currentGlovePosition, previousGlovePosition),
+                        1.0f / fixedStepSeconds);
                     const softphysics::physics::SphereCollider gloveCollider{
-                        {0.0f, 0.025f, currentGloveZ},
+                        currentGlovePosition,
                         GloveRadiusMeters};
-                    auto contact = softphysics::physics::collide_sphere_aabb(
+                    auto contact = impl_->torsoSimulation.collide_sphere(
                         gloveCollider,
-                        impl_->torsoCollisionProxy,
                         gloveVelocity);
                     if (contact)
                     {
@@ -647,16 +861,44 @@ namespace softphysics::engine
                               gloveVelocity.z * contact->normal.z));
                         if (!gloveWasInContact)
                         {
-                            constexpr float gloveMassKg = 0.45f;
+                            // Effective striking mass includes the connected hand and arm.
+                            constexpr float gloveMassKg = 3.0f;
                             constexpr float torsoMassKg = 18.0f;
                             constexpr float restitution = 0.12f;
+                            constexpr float frictionCoefficient = 0.55f;
+                            constexpr float maximumPunchImpulseNs = 2.5f;
                             const float effectiveMass =
                                 (gloveMassKg * torsoMassKg) / (gloveMassKg + torsoMassKg);
-                            contact->normalImpulse =
-                                std::min(
-                                    effectiveMass * (1.0f + restitution) * closingSpeed,
-                                    0.08f);
+                            contact->normalImpulse = std::min(
+                                effectiveMass * (1.0f + restitution) * closingSpeed,
+                                maximumPunchImpulseNs) * activePunch.impactStrength;
+
+                            const float normalVelocity =
+                                gloveVelocity.x * contact->normal.x +
+                                gloveVelocity.y * contact->normal.y +
+                                gloveVelocity.z * contact->normal.z;
+                            const PhysicsVector3 tangentVelocity = physics_subtract(
+                                gloveVelocity,
+                                physics_scale(contact->normal, normalVelocity));
+                            PhysicsVector3 tangentImpulse = physics_scale(
+                                tangentVelocity,
+                                effectiveMass * activePunch.impactStrength);
+                            const float tangentLength = std::sqrt(
+                                tangentImpulse.x * tangentImpulse.x +
+                                tangentImpulse.y * tangentImpulse.y +
+                                tangentImpulse.z * tangentImpulse.z);
+                            const float maximumTangentImpulse =
+                                frictionCoefficient * contact->normalImpulse;
+                            if (tangentLength > maximumTangentImpulse && tangentLength > 1.0e-8f)
+                            {
+                                tangentImpulse = physics_scale(
+                                    tangentImpulse,
+                                    maximumTangentImpulse / tangentLength);
+                            }
+                            contact->tangentialImpulse = tangentImpulse;
                         }
+                        contact->maximumContactForceNewtons =
+                            activePunch.impactForceNewtons;
                         impl_->torsoSimulation.add_contact(*contact);
                         gloveWasInContact = true;
                     }
@@ -666,6 +908,7 @@ namespace softphysics::engine
                     }
 
                     impl_->torsoSimulation.step(fixedStepSeconds);
+                    previousGlovePosition = currentGlovePosition;
                     simulationTime = nextSimulationTime;
                     simulationAccumulator -= fixedStepSeconds;
                     ++substepCount;
@@ -702,10 +945,14 @@ namespace softphysics::engine
                 impl_->renderer->clear({0.25f, 0.65f, 0.95f, 1.0f});
                 impl_->renderer->draw_mesh(impl_->torsoMesh, {});
                 softphysics::renderengine::Transform3D gloveTransform;
+                const auto renderedGlovePosition = punch_position_at(
+                    activePunch,
+                    nextPunch,
+                    simulationTime + simulationAccumulator);
                 gloveTransform.position = {
-                    0.0f,
-                    0.025f,
-                    glove_z_at(simulationTime + simulationAccumulator)};
+                    renderedGlovePosition.x,
+                    renderedGlovePosition.y,
+                    renderedGlovePosition.z};
                 impl_->renderer->draw_mesh(impl_->gloveMesh, gloveTransform);
                 if (!impl_->renderer->present())
                 {
